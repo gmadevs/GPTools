@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="92 92 840 840" width="512" height="512" role="img" aria-label="Google Photos QuickKeys">
+  <!-- A keyboard key with a landscape photo on its top; the sun is the lit point.
+       Same family as the Radiouploader, Radiowriter and Radiociter marks: a
+       midnight-blue rounded square, a grey shape, and one lit blue point. -->
+  <defs>
+    <radialGradient id="spark" cx="50%" cy="45%" r="55%">
+      <stop offset="0" stop-color="#8fe9ff"/>
+      <stop offset="0.55" stop-color="#3fb4ff"/>
+      <stop offset="1" stop-color="#1e8fff"/>
+    </radialGradient>
+    <filter id="glow" x="-150%" y="-150%" width="400%" height="400%">
+      <feGaussianBlur stdDeviation="26"/>
+    </filter>
+    <clipPath id="keytop">
+      <rect x="290" y="276" width="444" height="420" rx="54"/>
+    </clipPath>
+  </defs>
+  <rect x="92" y="92" width="840" height="840" rx="196" fill="#0d1f3c"/>
+  <!-- the key: outer cap and the top face -->
+  <rect x="242" y="242" width="540" height="540" rx="96" fill="none" stroke="#b7b9be" stroke-width="26"/>
+  <rect x="290" y="276" width="444" height="420" rx="54" fill="none" stroke="#b7b9be" stroke-width="12" opacity="0.55"/>
+  <!-- the photo on the key top: two mountains -->
+  <g clip-path="url(#keytop)" fill="#b7b9be">
+    <path d="M276 712 L446 506 C452 499 462 499 468 506 L566 626 L612 572 C618 565 628 565 634 572 L760 712 Z"/>
+  </g>
+  <!-- the sun -->
+  <circle cx="618" cy="404" r="58" fill="#2aa5ff" opacity="0.55" filter="url(#glow)"/>
+  <circle cx="618" cy="404" r="45" fill="url(#spark)"/>
+</svg>

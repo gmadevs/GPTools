@@ -1,0 +1,830 @@
+// ==UserScript==
+// @name         Google Photos QuickKeys
+// @namespace    https://github.com/gmadevs/GPTools
+// @homepageURL  https://github.com/gmadevs/GPTools
+// @supportURL   https://github.com/gmadevs/GPTools/issues
+// @downloadURL  https://raw.githubusercontent.com/gmadevs/GPTools/main/google-photos-quickkeys.user.js
+// @updateURL    https://raw.githubusercontent.com/gmadevs/GPTools/main/google-photos-quickkeys.user.js
+// @license      MIT
+// @version      0.6.0
+// @description  Tasti singoli per smistare le foto su Google Photos: archivia, elimina senza conferma, preferiti, album sui tasti 1-9, confronto dei duplicati, statistiche.
+// @match        https://photos.google.com/*
+// @run-at       document-idle
+// @grant        none
+// @noframes
+// ==/UserScript==
+
+/*
+
+MIT License
+
+Copyright (c) 2026 Giorgio Maria Agazzi
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+*/
+
+// Nota: Google Photos usa Trusted Types, quindi niente innerHTML: il DOM si
+// costruisce solo con createElement/textContent.
+
+(function () {
+  'use strict';
+
+  // ---------------------------------------------------------------------------
+  // Configurazione: cambia qui i tasti (valore di event.key, minuscolo).
+  // ---------------------------------------------------------------------------
+  const KEYS = {
+    archive: ['a'],
+    trash: ['d', 'x'],
+    favorite: ['f'],
+    undo: ['z', 'u'],
+    next: [' '],          // spazio = tieni la foto e passa alla successiva
+    toggleHud: ['h'],
+    dupMode: ['c'],       // modalità duplicati (confronto affiancato)
+  };
+  // In modalità duplicati: ← tieni A, → tieni B, ↓/Spazio tienile entrambe, Esc esci.
+  const AUTO_CONFIRM_TRASH = true;   // clicca da solo "Sposta nel cestino"
+  const DEBUG = false;               // true = log in console (Cmd+Opt+J)
+
+  // Album rapidi: tasto 1–9 → nome esatto dell'album. Si possono anche assegnare
+  // dalla pagina con Maiusc+numero: quelli vengono salvati nel browser e hanno
+  // la precedenza su questi.
+  const ALBUMS = {
+    // '1': 'Vacanze',
+    // '2': 'Famiglia',
+  };
+  const ALBUM_THEN_NEXT = false;     // true = dopo l'aggiunta passa alla foto successiva
+
+  // Testi dei pulsanti (italiano + inglese).
+  const RX = {
+    trashBtn: /^(elimina|delete|sposta nel cestino|move to trash|cestino|trash)$/i,
+    moreBtn: /^(altre opzioni|more options|altro|more)$/i,
+    // Niente \b: il testo della voce è attaccato alla scorciatoia ("ArchiviaMaiusc+A").
+    archiveItem: /^\s*(archivia|archive)(?!zion|d)/i,
+    confirmTrash: /(sposta nel cestino|nel cestino|move to trash|^elimina|^delete|rimuovi|remove)/i,
+    cancel: /^(annulla|cancel)$/i,
+    undo: /^(annulla|undo)$/i,
+    favorite: /(preferit|favou?rite)/i,
+    nextBtn: /(foto successiva|next photo|successiv|^next$|^avanti$)/i,
+    prevBtn: /(foto precedente|previous photo|precedent|^previous$|^indietro$)/i,
+    addToAlbumItem: /^\s*(aggiungi (all|a un|ad un)['’]?\s*album|add to( an)? album)/i,
+    anyAlbumItem: /album/i,
+    newAlbum: /(nuovo album|new album)/i,
+    closeDialog: /^(annulla|cancel|chiudi|close)$/i,
+  };
+
+  const log = (...a) => DEBUG && console.log('%c[GPQK]', 'color:#1a73e8;font-weight:bold', ...a);
+
+  // ---------------------------------------------------------------------------
+  // Utility
+  // ---------------------------------------------------------------------------
+  const isVisible = (el) => {
+    if (!el || !el.isConnected) return false;
+    if (el.closest('[aria-hidden="true"], [hidden], [inert]')) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return false;
+    if (r.bottom < 0 || r.right < 0 || r.top > innerHeight || r.left > innerWidth) return false;
+    // Niente controllo su opacity: nel visualizzatore la barra in alto sfuma
+    // quando il mouse è fermo, ma i pulsanti restano cliccabili.
+    const s = getComputedStyle(el);
+    return s.visibility !== 'hidden' && s.display !== 'none';
+  };
+
+  const ariaOf = (el) => (el.getAttribute('aria-label') || el.getAttribute('data-tooltip') || '').trim();
+  const textOf = (el) => (el.textContent || '').replace(/\s+/g, ' ').trim();
+
+  const isTyping = (el) => {
+    if (!el) return false;
+    const tag = el.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
+  };
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  async function waitFor(fn, timeout = 2500, step = 50) {
+    const end = Date.now() + timeout;
+    while (Date.now() < end) {
+      const v = fn();
+      if (v) return v;
+      await sleep(step);
+    }
+    return null;
+  }
+
+  const CLICKABLE = 'button, [role="button"], [role="menuitem"], [role="menuitemcheckbox"], [jsaction*="click"]';
+
+  // Cerca un elemento cliccabile visibile il cui aria-label (o testo) corrisponde.
+  // Scorre al contrario: il visualizzatore foto sta dopo la griglia nel DOM, quindi
+  // l'ultimo pulsante trovato è quello in primo piano.
+  function find(rx, { root = document, by = 'aria', exclude } = {}) {
+    const els = [...root.querySelectorAll(CLICKABLE)].filter(isVisible).reverse();
+    for (const el of els) {
+      const l = by === 'aria' ? ariaOf(el) : by === 'text' ? textOf(el) : ariaOf(el) || textOf(el);
+      if (l && rx.test(l) && !(exclude && exclude(el, l))) return el;
+    }
+    return null;
+  }
+
+  // Click "realistico": alcuni componenti Google reagiscono a pointer/mouse down/up.
+  function realClick(el) {
+    const r = el.getBoundingClientRect();
+    const opts = {
+      bubbles: true, cancelable: true, composed: true, view: window,
+      clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0,
+    };
+    el.dispatchEvent(new PointerEvent('pointerdown', { ...opts, pointerType: 'mouse', isPrimary: true }));
+    el.dispatchEvent(new MouseEvent('mousedown', opts));
+    el.dispatchEvent(new PointerEvent('pointerup', { ...opts, pointerType: 'mouse', isPrimary: true }));
+    el.dispatchEvent(new MouseEvent('mouseup', opts));
+    el.click();
+    log('click su', ariaOf(el) || textOf(el), el);
+  }
+
+  // Ultimo ripiego: simula la scorciatoia nativa.
+  function sendKey({ key, code, keyCode, shiftKey = false }) {
+    const target = document.activeElement || document.body;
+    for (const type of ['keydown', 'keyup']) {
+      const ev = new KeyboardEvent(type, { key, code, shiftKey, bubbles: true, cancelable: true, composed: true });
+      Object.defineProperty(ev, 'keyCode', { get: () => keyCode });
+      Object.defineProperty(ev, 'which', { get: () => keyCode });
+      target.dispatchEvent(ev);
+    }
+    log('tasto simulato', key);
+  }
+
+  function visibleDialogs() {
+    return [...document.querySelectorAll('[role="dialog"], [role="alertdialog"]')].filter(isVisible);
+  }
+
+  // Solo i dialoghi di conferma (quelli con "Annulla"), non il visualizzatore foto
+  // che a volte è marcato anch'esso come dialog.
+  function confirmDialogs() {
+    return visibleDialogs().filter((d) => find(RX.cancel, { root: d, by: 'any' }));
+  }
+
+  function visibleMenus() {
+    return [...document.querySelectorAll('[role="menu"]')].filter(isVisible);
+  }
+
+  // Elenca i pulsanti visibili: utile per capire le etichette se qualcosa non va.
+  function dump() {
+    const rows = [...document.querySelectorAll(CLICKABLE)].filter(isVisible).map((el) => ({
+      aria: ariaOf(el), text: textOf(el).slice(0, 60), role: el.getAttribute('role') || el.tagName.toLowerCase(),
+    })).filter((r) => r.aria || r.text);
+    console.table(rows);
+    return rows;
+  }
+  window.gpqkDump = dump;
+
+  // ---------------------------------------------------------------------------
+  // Azioni
+  // ---------------------------------------------------------------------------
+  // --- Statistiche: sessione in memoria, giorni e totale salvati nel browser ---
+  const STATS_KEY = 'gpqk-stats';
+  const FIELDS = ['archived', 'trashed', 'kept', 'favorited', 'albums'];
+  const emptyStats = () => Object.fromEntries(FIELDS.map((f) => [f, 0]));
+  const stats = emptyStats();        // sessione corrente
+  const history = [];                // azioni della sessione, per scalare su Annulla
+
+  const today = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+
+  function loadStats() {
+    let s;
+    try { s = JSON.parse(localStorage.getItem(STATS_KEY) || 'null'); } catch (_) {}
+    if (!s || typeof s !== 'object') s = {};
+    s.total = { ...emptyStats(), ...s.total };
+    s.days = s.days || {};
+    return s;
+  }
+
+  // Rilegge e riscrive ogni volta: così più schede aperte non si sovrascrivono.
+  function bump(field, delta) {
+    stats[field] = Math.max(0, stats[field] + delta);
+    const s = loadStats();
+    const day = (s.days[today()] = { ...emptyStats(), ...s.days[today()] });
+    day[field] = Math.max(0, day[field] + delta);
+    s.total[field] = Math.max(0, s.total[field] + delta);
+    try { localStorage.setItem(STATS_KEY, JSON.stringify(s)); } catch (_) {}
+  }
+
+  function count(field) {
+    bump(field, 1);
+    history.push(field);
+  }
+
+  // Da console: gpqkStats() per vedere tutto, gpqkResetStats() per azzerare.
+  window.gpqkStats = () => {
+    const s = loadStats();
+    console.table({ totale: s.total, ...s.days });
+    return s;
+  };
+  window.gpqkResetStats = () => {
+    try { localStorage.removeItem(STATS_KEY); } catch (_) {}
+    Object.assign(stats, emptyStats());
+    history.length = 0;
+    renderHud();
+  };
+
+  function findMenuItem(rx) {
+    for (const m of visibleMenus()) {
+      const it = find(rx, { root: m, by: 'text' }) || find(rx, { root: m, by: 'aria' });
+      if (it) return it;
+    }
+    // Ripiego: qualsiasi voce di menu visibile, anche fuori da [role=menu].
+    return [...document.querySelectorAll('[role="menuitem"]')]
+      .filter(isVisible)
+      .find((it) => rx.test(textOf(it)) || rx.test(ariaOf(it))) || null;
+  }
+
+  function logMenuItems() {
+    log('voci di menu visibili:', [...document.querySelectorAll('[role="menuitem"]')]
+      .filter(isVisible).map((it) => textOf(it) || ariaOf(it)));
+  }
+
+  function pressEscape() {
+    (document.activeElement || document.body).dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true })
+    );
+  }
+
+  async function archive() {
+    const more = find(RX.moreBtn, { by: 'aria' });
+    if (more) {
+      realClick(more);
+      const item = await waitFor(() => findMenuItem(RX.archiveItem), 1500);
+      if (!item) logMenuItems();
+      if (item) {
+        realClick(item);
+        count('archived');
+        toast('Archiviata');
+        return true;
+      }
+      log('voce "Archivia" non trovata nel menu');
+      pressEscape();
+      if (DEBUG) dump();
+      sendKey({ key: 'A', code: 'KeyA', keyCode: 65, shiftKey: true });
+      return toast('Voce "Archivia" non trovata nel menu (vedi console)', true);
+    }
+    log('pulsante "Altre opzioni" non trovato');
+    if (DEBUG) dump();
+    sendKey({ key: 'A', code: 'KeyA', keyCode: 65, shiftKey: true });
+    toast('Pulsante "Altre opzioni" non trovato (vedi console)', true);
+  }
+
+  async function trash() {
+    const btn = find(RX.trashBtn, { by: 'aria' });
+    if (btn) {
+      realClick(btn);
+    } else {
+      log('pulsante "Elimina" non trovato');
+      if (DEBUG) dump();
+      sendKey({ key: '#', code: 'Digit3', keyCode: 51, shiftKey: true });
+    }
+
+    if (!AUTO_CONFIRM_TRASH) return;
+
+    const ok = await waitFor(() => {
+      for (const d of confirmDialogs()) {
+        const b = find(RX.confirmTrash, { root: d, by: 'any', exclude: (_, l) => RX.cancel.test(l) });
+        if (b) return b;
+      }
+      return null;
+    });
+
+    if (ok) {
+      realClick(ok);
+      count('trashed');
+      toast('Nel cestino');
+      return true;
+    } else {
+      log('dialogo di conferma non trovato');
+      if (DEBUG) dump();
+      toast('Conferma non trovata: controlla e premi Invio', true);
+    }
+  }
+
+  function favorite() {
+    const btn = find(RX.favorite, { by: 'aria' });
+    if (!btn) {
+      if (DEBUG) dump();
+      return toast('Pulsante preferiti non trovato', true);
+    }
+    realClick(btn);
+    count('favorited');
+    toast('Preferiti ★');
+  }
+
+  // --- Album rapidi ----------------------------------------------------------
+  const ALBUMS_KEY = 'gpqk-albums';
+
+  function savedAlbums() {
+    try { return JSON.parse(localStorage.getItem(ALBUMS_KEY) || '{}'); } catch (_) { return {}; }
+  }
+
+  // Tasto → nome album. Una voce salvata vuota cancella quella del codice.
+  function albums() {
+    const all = { ...ALBUMS, ...savedAlbums() };
+    return Object.fromEntries(Object.entries(all).filter(([, n]) => n && n.trim()));
+  }
+
+  function assignAlbum(digit) {
+    const name = prompt(`Nome esatto dell'album per il tasto ${digit} (vuoto = rimuovi):`, albums()[digit] || '');
+    if (name === null) return;
+    const saved = savedAlbums();
+    saved[digit] = name.trim();
+    try { localStorage.setItem(ALBUMS_KEY, JSON.stringify(saved)); } catch (_) {}
+    renderAlbums();
+    toast(name.trim() ? `Tasto ${digit} → "${name.trim()}"` : `Tasto ${digit} libero`);
+  }
+
+  const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+  // Nel selettore album ogni riga contiene titolo + numero di elementi: cerchiamo
+  // il nodo di testo che coincide esattamente col nome e risaliamo alla riga.
+  function findAlbumEntry(root, name) {
+    const want = norm(name);
+    for (const leaf of root.querySelectorAll('*')) {
+      if (leaf.children.length || norm(leaf.textContent) !== want) continue;
+      const row = leaf.closest(CLICKABLE + ', [role="option"], [role="listitem"], li, [tabindex]');
+      if (row && root.contains(row)) return row;
+    }
+    return null;
+  }
+
+  function scrollableIn(root) {
+    return [root, ...root.querySelectorAll('*')].find((n) =>
+      n.scrollHeight > n.clientHeight + 20 && /(auto|scroll)/.test(getComputedStyle(n).overflowY));
+  }
+
+  function closeDialog(d) {
+    const b = find(RX.closeDialog, { root: d, by: 'any' });
+    if (b) realClick(b); else pressEscape();
+  }
+
+  async function addToAlbum(digit) {
+    const name = albums()[digit];
+    if (!name) return toast(`Nessun album sul tasto ${digit}: premi Maiusc+${digit} per assegnarlo`, true);
+
+    const more = find(RX.moreBtn, { by: 'aria' });
+    if (!more) {
+      if (DEBUG) dump();
+      return toast('Pulsante "Altre opzioni" non trovato', true);
+    }
+    const dialogsBefore = new Set(visibleDialogs());
+    realClick(more);
+    const item = await waitFor(() => findMenuItem(RX.addToAlbumItem), 1500)
+      || findMenuItem(RX.anyAlbumItem);
+    if (!item) {
+      logMenuItems();
+      pressEscape();
+      return toast('Voce "Aggiungi all\'album" non trovata (vedi console)', true);
+    }
+    realClick(item);
+
+    // Il selettore è il dialogo nuovo, di solito con la voce "Nuovo album".
+    const picker = await waitFor(() => {
+      const fresh = visibleDialogs().filter((d) => !dialogsBefore.has(d));
+      return fresh.find((d) => find(RX.newAlbum, { root: d, by: 'any' })) || fresh[fresh.length - 1];
+    }, 3000);
+    if (!picker) return toast('Selettore album non comparso', true);
+
+    // L'elenco si carica a poco a poco: aspettiamo, poi scorriamo se serve.
+    let entry = await waitFor(() => findAlbumEntry(picker, name), 1500);
+    for (let i = 0; !entry && i < 60; i++) {
+      const sc = scrollableIn(picker);
+      if (!sc) break;
+      const prev = sc.scrollTop;
+      sc.scrollTop += sc.clientHeight * 0.8;
+      entry = await waitFor(() => findAlbumEntry(picker, name), 300);
+      if (!entry && sc.scrollTop === prev) break;   // in fondo all'elenco
+    }
+    if (!entry) {
+      closeDialog(picker);
+      return toast(`Album "${name}" non trovato nell'elenco`, true);
+    }
+
+    entry.scrollIntoView({ block: 'center' });
+    realClick(entry);
+    await waitFor(() => !isVisible(picker), 3000);
+    count('albums');
+    toast(`Aggiunta a "${name}"`);
+
+    if (ALBUM_THEN_NEXT) {
+      await sleep(300);
+      return next();
+    }
+  }
+
+  function undo() {
+    // Il pulsante "Annulla" della barra in basso (snackbar), non quello dei dialoghi.
+    const dialogs = confirmDialogs();
+    const candidates = [...document.querySelectorAll(CLICKABLE)].filter(
+      (b) => isVisible(b) && RX.undo.test(ariaOf(b) || textOf(b)) && !dialogs.some((d) => d.contains(b))
+    );
+    const btn = candidates[candidates.length - 1];
+    if (!btn) return toast('Niente da annullare', true);
+    realClick(btn);
+    const last = history.pop();
+    if (last) bump(last, -1);
+    toast('Annullato ↶');
+  }
+
+  function next() {
+    const btn = find(RX.nextBtn, { by: 'aria' });
+    if (btn) realClick(btn);
+    else sendKey({ key: 'ArrowRight', code: 'ArrowRight', keyCode: 39 });
+    count('kept');
+    renderHud();
+    return true;
+  }
+
+  // --- Modalità duplicati ----------------------------------------------------
+  // La foto "A" resta bloccata a sinistra, a destra c'è quella aperta ("B").
+  // Si sceglie quale tenere; con raffiche di 3+ foto A resta e si confronta
+  // con la successiva.
+  const dup = { on: false, a: null, b: null, lastUrl: null, staleSrc: null, timer: null, ui: null };
+  const inViewer = () => location.pathname.includes('/photo/');
+
+  // Qui serve anche il controllo su opacity: il visualizzatore tiene nel DOM le
+  // foto vicine, trasparenti, nella stessa posizione di quella mostrata.
+  function imgShown(img) {
+    const r = img.getBoundingClientRect();
+    if (r.width < 50 || r.height < 50) return false;
+    if (r.right <= 0 || r.bottom <= 0 || r.left >= innerWidth || r.top >= innerHeight) return false;
+    for (let n = img; n && n !== document.documentElement; n = n.parentElement) {
+      const s = getComputedStyle(n);
+      if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+    }
+    return true;
+  }
+
+  // La foto aperta = l'immagine visibile più grande (escluso il nostro overlay).
+  function currentPhoto() {
+    let best = null, bestArea = 0;
+    for (const img of document.images) {
+      if (img.closest('#gpqk-dup') || !imgShown(img)) continue;
+      const r = img.getBoundingClientRect();
+      const area = (Math.min(r.right, innerWidth) - Math.max(r.left, 0)) * (Math.min(r.bottom, innerHeight) - Math.max(r.top, 0));
+      if (area > bestArea) { best = img; bestArea = area; }
+    }
+    if (!best || bestArea < 200 * 200) return null;
+    const holder = best.closest('[aria-label]');
+    const label = best.alt || (holder ? ariaOf(holder) : '');
+    return { url: location.href, src: best.currentSrc || best.src, label };
+  }
+
+  function dupUI() {
+    if (dup.ui) return dup.ui;
+    const pane = (tag) => {
+      const img = el('img');
+      const cap = el('div', { className: 'gpqk-cap' });
+      return { img, cap, root: el('div', { className: 'gpqk-pane' }, [el('div', { className: 'gpqk-tag', textContent: tag }), img, cap]) };
+    };
+    const left = pane('A  ←');
+    const right = pane('→  B');
+    const bar = el('div', { className: 'gpqk-dupbar' }, [
+      el('kbd', { textContent: '←' }), ' tieni A, elimina B     ',
+      el('kbd', { textContent: '→' }), ' tieni B, elimina A     ',
+      el('kbd', { textContent: '↓' }), ' / ', el('kbd', { textContent: 'Spazio' }), ' tienile entrambe     ',
+      el('kbd', { textContent: 'Esc' }), ' esci',
+    ]);
+    const root = el('div', { id: 'gpqk-dup' }, [left.root, right.root, bar]);
+    document.body.append(root);
+    dup.ui = { root, left, right };
+    return dup.ui;
+  }
+
+  function showPhoto(pane, ph) {
+    if (!ph) {
+      pane.img.removeAttribute('src');
+      pane.cap.textContent = 'caricamento…';
+      return;
+    }
+    if (pane.img.getAttribute('src') !== ph.src) pane.img.src = ph.src;
+    pane.cap.textContent = ph.label || '';
+  }
+
+  // Tiene aggiornato il riquadro B. Dopo un cambio foto l'immagine vecchia può
+  // restare a schermo un attimo: la scartiamo finché non arriva quella nuova.
+  function syncDup() {
+    if (!dup.on) return;
+    if (!inViewer()) return exitDup('Visualizzatore chiuso');
+    if (location.href !== dup.lastUrl) {
+      dup.staleSrc = dup.b ? dup.b.src : dup.staleSrc;
+      dup.lastUrl = location.href;
+      dup.b = null;
+      showPhoto(dup.ui.right, null);
+    }
+    if (location.href === dup.a.url) return;     // siamo tornati su A per eliminarla
+    const cur = currentPhoto();
+    if (cur && cur.src !== dup.a.src && cur.src !== dup.staleSrc) {
+      dup.b = cur;
+      showPhoto(dup.ui.right, cur);
+    }
+  }
+
+  async function go(rx, key, keyCode) {
+    const before = location.href;
+    const btn = find(rx, { by: 'aria' });
+    if (btn) realClick(btn);
+    else sendKey({ key, code: key, keyCode });
+    return waitFor(() => location.href !== before, ADVANCE_TIMEOUT);
+  }
+  const goNext = () => go(RX.nextBtn, 'ArrowRight', 39);
+  const goPrev = () => go(RX.prevBtn, 'ArrowLeft', 37);
+
+  function setA(ph) {
+    dup.a = ph;
+    showPhoto(dup.ui.left, ph);
+  }
+
+  async function toggleDup() {
+    if (dup.on) return exitDup();
+    if (!inViewer()) return toast('Apri prima una foto', true);
+    const a = currentPhoto();
+    if (!a) return toast('Foto non trovata sullo schermo', true);
+    dupUI().root.style.display = '';
+    Object.assign(dup, { on: true, b: null, lastUrl: location.href, staleSrc: a.src });
+    setA(a);
+    showPhoto(dup.ui.right, null);
+    dup.timer = setInterval(syncDup, 200);
+    toast('Modalità duplicati');
+    if (!(await goNext())) exitDup('Non ci sono altre foto');
+  }
+
+  function exitDup(msg) {
+    if (!dup.on) return;
+    dup.on = false;
+    clearInterval(dup.timer);
+    dup.ui.root.style.display = 'none';
+    toast(msg || 'Modalità duplicati chiusa', !!msg);
+  }
+
+  function needB() {
+    if (dup.b && dup.b.url === location.href) return true;
+    toast('Aspetta che la foto B si carichi', true);
+    return false;
+  }
+
+  // ← : elimina B (quella aperta), A resta e si confronta con la successiva.
+  async function dupKeepA() {
+    if (!needB()) return;
+    const before = location.href;
+    if (!(await trash())) return exitDup('Eliminazione non confermata: controlla');
+    await waitFor(() => location.href !== before, ADVANCE_TIMEOUT);
+    if (location.href === before || location.href === dup.a.url) exitDup('Fine delle foto');
+  }
+
+  // → : torna su A, la elimina, poi B diventa la nuova A.
+  async function dupKeepB() {
+    if (!needB()) return;
+    const b = dup.b;
+    await goPrev();
+    if (location.href !== dup.a.url) {
+      return toast('Non riesco a tornare sulla foto A: niente eliminato', true);
+    }
+    await sleep(300);
+    if (!(await trash())) return exitDup('Eliminazione non confermata: controlla');
+    await waitFor(() => location.href !== dup.a.url, ADVANCE_TIMEOUT);
+    if (location.href !== b.url) {
+      return exitDup('Dopo l\'eliminazione non sono su B: controlla');
+    }
+    setA(b);
+    await sleep(300);
+    if (!(await goNext())) exitDup('Fine delle foto');
+  }
+
+  // ↓ / Spazio : diverse, tienile entrambe. B diventa la nuova A.
+  async function dupKeepBoth() {
+    if (!needB()) return;
+    count('kept');
+    setA(dup.b);
+    if (!(await goNext())) exitDup('Fine delle foto');
+  }
+
+  const DUP_ACTIONS = {
+    arrowleft: dupKeepA,
+    arrowright: dupKeepB,
+    arrowdown: dupKeepBoth,
+    ' ': dupKeepBoth,
+    escape: () => exitDup(),
+  };
+
+  // ---------------------------------------------------------------------------
+  // HUD (contatore + guida tasti) e toast
+  // ---------------------------------------------------------------------------
+  const el = (tag, props = {}, children = []) => {
+    const n = document.createElement(tag);
+    Object.assign(n, props);
+    for (const c of children) n.append(c);
+    return n;
+  };
+
+  document.head.append(el('style', {
+    textContent: `
+      #gpqk-hud {
+        position: fixed; right: 16px; bottom: 16px; z-index: 2147483647;
+        background: rgba(32,33,36,.92); color: #fff; font: 12px/1.6 system-ui, sans-serif;
+        padding: 10px 12px; border-radius: 10px; box-shadow: 0 4px 16px rgba(0,0,0,.35);
+        pointer-events: none; min-width: 170px;
+      }
+      #gpqk-hud b { color: #8ab4f8; }
+      #gpqk-hud kbd {
+        display: inline-block; min-width: 14px; text-align: center; padding: 0 4px; margin-right: 2px;
+        border: 1px solid #5f6368; border-radius: 4px; background: #3c4043; font: inherit;
+      }
+      #gpqk-hud { transition: box-shadow .1s; }
+      #gpqk-hud.gpqk-wait { box-shadow: 0 0 0 2px #fbbc04, 0 4px 16px rgba(0,0,0,.35); }
+      #gpqk-hud.gpqk-busy { box-shadow: 0 0 0 3px #d93025, 0 4px 16px rgba(0,0,0,.35); }
+      #gpqk-hud .gpqk-help { margin-top: 6px; }
+      #gpqk-hud.hidden .gpqk-help { display: none !important; }
+      #gpqk-hud .gpqk-stats {
+        display: grid; grid-template-columns: auto repeat(5, minmax(26px, auto));
+        column-gap: 8px; text-align: right; font-variant-numeric: tabular-nums;
+      }
+      #gpqk-hud .gpqk-stats span:nth-child(6n+1) { text-align: left; color: #bdc1c6; }
+      #gpqk-hud .gpqk-albums { border-top: 1px solid #5f6368; padding-top: 6px; }
+      #gpqk-dup {
+        position: fixed; inset: 0; z-index: 2147483646; background: rgba(0,0,0,.95);
+        display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr auto;
+        gap: 12px; padding: 64px 16px 16px; box-sizing: border-box;
+        font: 13px/1.5 system-ui, sans-serif; color: #e8eaed;
+      }
+      #gpqk-dup .gpqk-pane {
+        position: relative; min-height: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; border: 1px solid #3c4043; border-radius: 10px;
+        overflow: hidden; background: #111;
+      }
+      #gpqk-dup .gpqk-pane img { max-width: 100%; max-height: calc(100% - 28px); object-fit: contain; }
+      #gpqk-dup .gpqk-tag {
+        position: absolute; top: 8px; left: 8px; background: #1a73e8; color: #fff;
+        font-weight: 700; padding: 2px 10px; border-radius: 12px;
+      }
+      #gpqk-dup .gpqk-cap { padding: 4px 8px; color: #bdc1c6; text-align: center; font-size: 12px; }
+      #gpqk-dup .gpqk-dupbar { grid-column: 1 / -1; text-align: center; padding-bottom: 4px; white-space: pre-wrap; }
+      #gpqk-dup kbd {
+        display: inline-block; min-width: 14px; text-align: center; padding: 0 6px;
+        border: 1px solid #5f6368; border-radius: 4px; background: #3c4043; font: inherit;
+      }
+      #gpqk-toast {
+        position: fixed; left: 50%; top: 24px; transform: translateX(-50%); z-index: 2147483647;
+        background: #1a73e8; color: #fff; font: 600 14px system-ui, sans-serif;
+        padding: 8px 16px; border-radius: 20px; opacity: 0; transition: opacity .15s;
+        pointer-events: none;
+      }
+      #gpqk-toast.show { opacity: 1; }
+      #gpqk-toast.warn { background: #d93025; }
+    `,
+  }));
+
+  const statsLine = el('div');
+  const keyLabel = (x) => (x === ' ' ? 'Spazio' : x.toUpperCase());
+  const helpRow = (action, label) =>
+    el('div', {}, [...KEYS[action].map((x) => el('kbd', { textContent: keyLabel(x) })), ' ' + label]);
+  const help = el('div', { className: 'gpqk-help' }, [
+    helpRow('archive', 'archivia'),
+    helpRow('trash', AUTO_CONFIRM_TRASH ? 'elimina (senza conferma)' : 'elimina'),
+    helpRow('favorite', 'preferito'),
+    helpRow('next', 'tieni e vai avanti'),
+    helpRow('undo', 'annulla ultima'),
+    helpRow('dupMode', 'modalità duplicati'),
+    helpRow('toggleHud', 'mostra/nascondi guida'),
+    el('div', {}, [el('kbd', { textContent: '1–9' }), ' album  ', el('kbd', { textContent: 'Maiusc+1–9' }), ' assegna']),
+  ]);
+  const albumsBox = el('div', { className: 'gpqk-help gpqk-albums' });
+  const hud = el('div', { id: 'gpqk-hud' }, [statsLine, help, albumsBox]);
+
+  function renderAlbums() {
+    const entries = Object.entries(albums()).sort(([a], [b]) => a.localeCompare(b));
+    albumsBox.replaceChildren(...entries.map(([d, n]) => el('div', {}, [el('kbd', { textContent: d }), ' ' + n])));
+    albumsBox.style.display = entries.length ? '' : 'none';
+  }
+  const toastEl = el('div', { id: 'gpqk-toast' });
+  document.body.append(hud, toastEl);
+
+  function renderHud() {
+    const s = loadStats();
+    const rows = [
+      ['', ...['📦', '🗑', '✓', '★', '🗂']],
+      ['Sessione', ...FIELDS.map((f) => stats[f])],
+      ['Oggi', ...FIELDS.map((f) => (s.days[today()] || {})[f] || 0)],
+      ['Totale', ...FIELDS.map((f) => s.total[f])],
+    ];
+    statsLine.replaceChildren(el('div', { className: 'gpqk-stats' },
+      rows.flatMap((r, i) => r.map((c, j) =>
+        i && j ? el('b', { textContent: c }) : el('span', { textContent: c })))));
+  }
+
+  // Un'altra scheda ha aggiornato le statistiche.
+  window.addEventListener('storage', (e) => { if (e.key === STATS_KEY) renderHud(); });
+
+  let hudHidden = false;
+  try { hudHidden = localStorage.getItem('gpqk-hud-hidden') === '1'; } catch (_) {}
+  hud.classList.toggle('hidden', hudHidden);
+
+  function toggleHud() {
+    hudHidden = !hudHidden;
+    hud.classList.toggle('hidden', hudHidden);
+    try { localStorage.setItem('gpqk-hud-hidden', hudHidden ? '1' : '0'); } catch (_) {}
+  }
+
+  let toastTimer;
+  function toast(msg, warn = false) {
+    toastEl.textContent = msg;
+    toastEl.classList.toggle('warn', warn);
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.remove('show'), warn ? 2000 : 900);
+    renderHud();
+  }
+
+  renderHud();
+  renderAlbums();
+
+  // ---------------------------------------------------------------------------
+  // Listener tastiera
+  // ---------------------------------------------------------------------------
+  const ACTIONS = { archive, trash, favorite, undo, next, toggleHud, dupMode: toggleDup };
+  const keyMap = new Map();
+  for (const [action, keys] of Object.entries(KEYS)) {
+    for (const key of keys) keyMap.set(key, ACTIONS[action]);
+  }
+
+  // Le azioni che passano alla foto successiva restituiscono true: prima di
+  // accettare un altro comando aspettiamo che Google Photos abbia davvero
+  // cambiato foto, altrimenti le richieste si accumulano e l'app si blocca.
+  const ADVANCE_TIMEOUT = 5000;  // ms massimi di attesa del cambio foto
+  const MIN_GAP = 300;           // ms minimi tra un comando e l'altro
+
+  async function waitForAdvance(before) {
+    if (!location.pathname.includes('/photo/')) return sleep(600); // griglia: niente URL da guardare
+    const changed = await waitFor(() => location.href !== before, ADVANCE_TIMEOUT, 50);
+    if (!changed) {
+      log('la foto non è cambiata entro', ADVANCE_TIMEOUT, 'ms');
+      toast('Google Photos è lento: aspetto prima di continuare', true);
+    }
+  }
+
+  let busy = false;
+
+  window.addEventListener('keydown', async (e) => {
+    if (!e.isTrusted) return;                       // ignora i tasti simulati da noi
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (isTyping(e.target) || isTyping(document.activeElement)) return;
+    if (confirmDialogs().length) return;            // non interferire coi dialoghi aperti
+
+    // Numeri letti da e.code: con Maiusc e.key diventa "!", "\"", ... a seconda del layout.
+    const digit = (/^(?:Digit|Numpad)([1-9])$/.exec(e.code) || [])[1];
+    let fn;
+    if (digit) fn = e.shiftKey ? () => assignAlbum(digit) : () => addToAlbum(digit);
+    else if (!e.shiftKey) {
+      const k = e.key.toLowerCase();
+      fn = (dup.on && DUP_ACTIONS[k]) || keyMap.get(k);
+    }
+    if (!fn) return;
+
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if (e.repeat) return;                           // tasto tenuto premuto: un solo comando
+    if (busy) {
+      hud.classList.add('gpqk-busy');
+      return;
+    }
+    busy = true;
+    hud.classList.add('gpqk-wait');
+    const before = location.href;
+    log('azione', fn.name);
+    try {
+      const advanced = await fn();
+      if (advanced === true) await waitForAdvance(before);
+      await sleep(MIN_GAP);
+    } catch (err) {
+      console.error('[GPQK]', err);
+      toast('Errore: ' + err.message, true);
+    } finally {
+      busy = false;
+      hud.classList.remove('gpqk-wait', 'gpqk-busy');
+    }
+  }, true);
+
+  log('caricato ✔ — digita gpqkDump() in console per vedere i pulsanti visibili');
+})();
