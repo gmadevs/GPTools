@@ -6,8 +6,8 @@
 // @downloadURL  https://raw.githubusercontent.com/gmadevs/GPTools/main/google-photos-quickkeys.user.js
 // @updateURL    https://raw.githubusercontent.com/gmadevs/GPTools/main/google-photos-quickkeys.user.js
 // @license      MIT
-// @version      0.6.0
-// @description  Tasti singoli per smistare le foto su Google Photos: archivia, elimina senza conferma, preferiti, album sui tasti 1-9, confronto dei duplicati, statistiche.
+// @version      0.7.0
+// @description  Single keys for sorting photos on Google Photos: archive, delete with the dialog confirmed, favourite, albums on keys 1-9, side-by-side comparison of similar photos, saved counts.
 // @match        https://photos.google.com/*
 // @run-at       document-idle
 // @grant        none
@@ -40,42 +40,42 @@ SOFTWARE.
 
 */
 
-// Nota: Google Photos usa Trusted Types, quindi niente innerHTML: il DOM si
-// costruisce solo con createElement/textContent.
+// Google Photos enforces Trusted Types, so no innerHTML: the DOM is built with
+// createElement and textContent only.
 
 (function () {
   'use strict';
 
   // ---------------------------------------------------------------------------
-  // Configurazione: cambia qui i tasti (valore di event.key, minuscolo).
+  // Settings: the keys for each action (event.key, lower case).
   // ---------------------------------------------------------------------------
   const KEYS = {
     archive: ['a'],
     trash: ['d', 'x'],
     favorite: ['f'],
     undo: ['z', 'u'],
-    next: [' '],          // spazio = tieni la foto e passa alla successiva
+    next: [' '],          // keep the photo and go to the next one
     toggleHud: ['h'],
-    dupMode: ['c'],       // modalità duplicati (confronto affiancato)
+    dupMode: ['c'],       // comparison mode for similar photos
   };
-  // In modalità duplicati: ← tieni A, → tieni B, ↓/Spazio tienile entrambe, Esc esci.
-  const AUTO_CONFIRM_TRASH = true;   // clicca da solo "Sposta nel cestino"
-  const DEBUG = false;               // true = log in console (Cmd+Opt+J)
+  // In comparison mode: ← keep A, → keep B, ↓/Space keep both, Esc leave.
+  const AUTO_CONFIRM_TRASH = true;   // press "Move to trash" in the dialog
+  const DEBUG = false;               // true = log to the console (Cmd+Opt+J)
 
-  // Album rapidi: tasto 1–9 → nome esatto dell'album. Si possono anche assegnare
-  // dalla pagina con Maiusc+numero: quelli vengono salvati nel browser e hanno
-  // la precedenza su questi.
+  // Albums on the number keys: key 1–9 → exact album name. They can also be
+  // assigned on the page with Shift+number; those are saved in the browser and
+  // replace the ones set here.
   const ALBUMS = {
-    // '1': 'Vacanze',
-    // '2': 'Famiglia',
+    // '1': 'Holidays',
+    // '2': 'Family',
   };
-  const ALBUM_THEN_NEXT = false;     // true = dopo l'aggiunta passa alla foto successiva
+  const ALBUM_THEN_NEXT = false;     // true = go to the next photo after adding
 
-  // Testi dei pulsanti (italiano + inglese).
+  // Button labels in Italian and English Google Photos.
   const RX = {
     trashBtn: /^(elimina|delete|sposta nel cestino|move to trash|cestino|trash)$/i,
     moreBtn: /^(altre opzioni|more options|altro|more)$/i,
-    // Niente \b: il testo della voce è attaccato alla scorciatoia ("ArchiviaMaiusc+A").
+    // No \b: the item text runs into the shortcut shown beside it ("ArchiveShift+A").
     archiveItem: /^\s*(archivia|archive)(?!zion|d)/i,
     confirmTrash: /(sposta nel cestino|nel cestino|move to trash|^elimina|^delete|rimuovi|remove)/i,
     cancel: /^(annulla|cancel)$/i,
@@ -100,8 +100,8 @@ SOFTWARE.
     const r = el.getBoundingClientRect();
     if (r.width === 0 || r.height === 0) return false;
     if (r.bottom < 0 || r.right < 0 || r.top > innerHeight || r.left > innerWidth) return false;
-    // Niente controllo su opacity: nel visualizzatore la barra in alto sfuma
-    // quando il mouse è fermo, ma i pulsanti restano cliccabili.
+    // No opacity check: in the viewer the top bar fades out when the mouse is
+    // still, and its buttons can still be clicked.
     const s = getComputedStyle(el);
     return s.visibility !== 'hidden' && s.display !== 'none';
   };
@@ -129,9 +129,9 @@ SOFTWARE.
 
   const CLICKABLE = 'button, [role="button"], [role="menuitem"], [role="menuitemcheckbox"], [jsaction*="click"]';
 
-  // Cerca un elemento cliccabile visibile il cui aria-label (o testo) corrisponde.
-  // Scorre al contrario: il visualizzatore foto sta dopo la griglia nel DOM, quindi
-  // l'ultimo pulsante trovato è quello in primo piano.
+  // Finds a visible clickable element whose aria-label (or text) matches.
+  // Searches from the end: the viewer comes after the grid in the DOM, so the
+  // last match is the one in front.
   function find(rx, { root = document, by = 'aria', exclude } = {}) {
     const els = [...root.querySelectorAll(CLICKABLE)].filter(isVisible).reverse();
     for (const el of els) {
@@ -141,7 +141,7 @@ SOFTWARE.
     return null;
   }
 
-  // Click "realistico": alcuni componenti Google reagiscono a pointer/mouse down/up.
+  // A full click: some Google components react to pointer and mouse down/up.
   function realClick(el) {
     const r = el.getBoundingClientRect();
     const opts = {
@@ -153,10 +153,10 @@ SOFTWARE.
     el.dispatchEvent(new PointerEvent('pointerup', { ...opts, pointerType: 'mouse', isPrimary: true }));
     el.dispatchEvent(new MouseEvent('mouseup', opts));
     el.click();
-    log('click su', ariaOf(el) || textOf(el), el);
+    log('clicked', ariaOf(el) || textOf(el), el);
   }
 
-  // Ultimo ripiego: simula la scorciatoia nativa.
+  // Last resort: send the Google Photos shortcut.
   function sendKey({ key, code, keyCode, shiftKey = false }) {
     const target = document.activeElement || document.body;
     for (const type of ['keydown', 'keyup']) {
@@ -165,15 +165,15 @@ SOFTWARE.
       Object.defineProperty(ev, 'which', { get: () => keyCode });
       target.dispatchEvent(ev);
     }
-    log('tasto simulato', key);
+    log('sent key', key);
   }
 
   function visibleDialogs() {
     return [...document.querySelectorAll('[role="dialog"], [role="alertdialog"]')].filter(isVisible);
   }
 
-  // Solo i dialoghi di conferma (quelli con "Annulla"), non il visualizzatore foto
-  // che a volte è marcato anch'esso come dialog.
+  // Confirmation dialogs only (the ones with a Cancel button), not the photo
+  // viewer, which can also have role="dialog".
   function confirmDialogs() {
     return visibleDialogs().filter((d) => find(RX.cancel, { root: d, by: 'any' }));
   }
@@ -182,7 +182,7 @@ SOFTWARE.
     return [...document.querySelectorAll('[role="menu"]')].filter(isVisible);
   }
 
-  // Elenca i pulsanti visibili: utile per capire le etichette se qualcosa non va.
+  // Lists the visible buttons and their labels, for when a key stops working.
   function dump() {
     const rows = [...document.querySelectorAll(CLICKABLE)].filter(isVisible).map((el) => ({
       aria: ariaOf(el), text: textOf(el).slice(0, 60), role: el.getAttribute('role') || el.tagName.toLowerCase(),
@@ -193,14 +193,14 @@ SOFTWARE.
   window.gpqkDump = dump;
 
   // ---------------------------------------------------------------------------
-  // Azioni
+  // Actions
   // ---------------------------------------------------------------------------
-  // --- Statistiche: sessione in memoria, giorni e totale salvati nel browser ---
+  // --- Counts: the session in memory, days and total in local storage ---------
   const STATS_KEY = 'gpqk-stats';
   const FIELDS = ['archived', 'trashed', 'kept', 'favorited', 'albums'];
   const emptyStats = () => Object.fromEntries(FIELDS.map((f) => [f, 0]));
-  const stats = emptyStats();        // sessione corrente
-  const history = [];                // azioni della sessione, per scalare su Annulla
+  const stats = emptyStats();        // this session
+  const history = [];                // actions of this session, for Undo
 
   const today = () => {
     const d = new Date();
@@ -216,7 +216,7 @@ SOFTWARE.
     return s;
   }
 
-  // Rilegge e riscrive ogni volta: così più schede aperte non si sovrascrivono.
+  // Read and write each time, so that two open tabs do not overwrite each other.
   function bump(field, delta) {
     stats[field] = Math.max(0, stats[field] + delta);
     const s = loadStats();
@@ -231,10 +231,10 @@ SOFTWARE.
     history.push(field);
   }
 
-  // Da console: gpqkStats() per vedere tutto, gpqkResetStats() per azzerare.
+  // In the console: gpqkStats() prints the counts, gpqkResetStats() deletes them.
   window.gpqkStats = () => {
     const s = loadStats();
-    console.table({ totale: s.total, ...s.days });
+    console.table({ total: s.total, ...s.days });
     return s;
   };
   window.gpqkResetStats = () => {
@@ -249,14 +249,14 @@ SOFTWARE.
       const it = find(rx, { root: m, by: 'text' }) || find(rx, { root: m, by: 'aria' });
       if (it) return it;
     }
-    // Ripiego: qualsiasi voce di menu visibile, anche fuori da [role=menu].
+    // Fallback: any visible menu item, also outside [role=menu].
     return [...document.querySelectorAll('[role="menuitem"]')]
       .filter(isVisible)
       .find((it) => rx.test(textOf(it)) || rx.test(ariaOf(it))) || null;
   }
 
   function logMenuItems() {
-    log('voci di menu visibili:', [...document.querySelectorAll('[role="menuitem"]')]
+    log('visible menu items:', [...document.querySelectorAll('[role="menuitem"]')]
       .filter(isVisible).map((it) => textOf(it) || ariaOf(it)));
   }
 
@@ -275,19 +275,19 @@ SOFTWARE.
       if (item) {
         realClick(item);
         count('archived');
-        toast('Archiviata');
+        toast('Archived');
         return true;
       }
-      log('voce "Archivia" non trovata nel menu');
+      log('no "Archive" item in the menu');
       pressEscape();
       if (DEBUG) dump();
       sendKey({ key: 'A', code: 'KeyA', keyCode: 65, shiftKey: true });
-      return toast('Voce "Archivia" non trovata nel menu (vedi console)', true);
+      return toast('No "Archive" item in the menu (see console)', true);
     }
-    log('pulsante "Altre opzioni" non trovato');
+    log('no "More options" button');
     if (DEBUG) dump();
     sendKey({ key: 'A', code: 'KeyA', keyCode: 65, shiftKey: true });
-    toast('Pulsante "Altre opzioni" non trovato (vedi console)', true);
+    toast('No "More options" button (see console)', true);
   }
 
   async function trash() {
@@ -295,7 +295,7 @@ SOFTWARE.
     if (btn) {
       realClick(btn);
     } else {
-      log('pulsante "Elimina" non trovato');
+      log('no "Delete" button');
       if (DEBUG) dump();
       sendKey({ key: '#', code: 'Digit3', keyCode: 51, shiftKey: true });
     }
@@ -313,12 +313,12 @@ SOFTWARE.
     if (ok) {
       realClick(ok);
       count('trashed');
-      toast('Nel cestino');
+      toast('Moved to bin');
       return true;
     } else {
-      log('dialogo di conferma non trovato');
+      log('no confirmation dialog');
       if (DEBUG) dump();
-      toast('Conferma non trovata: controlla e premi Invio', true);
+      toast('No confirmation found: check the page and press Enter', true);
     }
   }
 
@@ -326,40 +326,40 @@ SOFTWARE.
     const btn = find(RX.favorite, { by: 'aria' });
     if (!btn) {
       if (DEBUG) dump();
-      return toast('Pulsante preferiti non trovato', true);
+      return toast('No favourite button', true);
     }
     realClick(btn);
     count('favorited');
-    toast('Preferiti ★');
+    toast('Favourite ★');
   }
 
-  // --- Album rapidi ----------------------------------------------------------
+  // --- Albums on the number keys --------------------------------------------
   const ALBUMS_KEY = 'gpqk-albums';
 
   function savedAlbums() {
     try { return JSON.parse(localStorage.getItem(ALBUMS_KEY) || '{}'); } catch (_) { return {}; }
   }
 
-  // Tasto → nome album. Una voce salvata vuota cancella quella del codice.
+  // Key → album name. An empty saved entry clears the one set in the code.
   function albums() {
     const all = { ...ALBUMS, ...savedAlbums() };
     return Object.fromEntries(Object.entries(all).filter(([, n]) => n && n.trim()));
   }
 
   function assignAlbum(digit) {
-    const name = prompt(`Nome esatto dell'album per il tasto ${digit} (vuoto = rimuovi):`, albums()[digit] || '');
+    const name = prompt(`Exact album name for key ${digit} (empty = clear):`, albums()[digit] || '');
     if (name === null) return;
     const saved = savedAlbums();
     saved[digit] = name.trim();
     try { localStorage.setItem(ALBUMS_KEY, JSON.stringify(saved)); } catch (_) {}
     renderAlbums();
-    toast(name.trim() ? `Tasto ${digit} → "${name.trim()}"` : `Tasto ${digit} libero`);
+    toast(name.trim() ? `Key ${digit} → "${name.trim()}"` : `Key ${digit} cleared`);
   }
 
   const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
 
-  // Nel selettore album ogni riga contiene titolo + numero di elementi: cerchiamo
-  // il nodo di testo che coincide esattamente col nome e risaliamo alla riga.
+  // Each row of the album picker holds the title and the number of items: find
+  // the text node equal to the name and go up to its row.
   function findAlbumEntry(root, name) {
     const want = norm(name);
     for (const leaf of root.querySelectorAll('*')) {
@@ -382,12 +382,12 @@ SOFTWARE.
 
   async function addToAlbum(digit) {
     const name = albums()[digit];
-    if (!name) return toast(`Nessun album sul tasto ${digit}: premi Maiusc+${digit} per assegnarlo`, true);
+    if (!name) return toast(`No album on key ${digit}: press Shift+${digit} to assign one`, true);
 
     const more = find(RX.moreBtn, { by: 'aria' });
     if (!more) {
       if (DEBUG) dump();
-      return toast('Pulsante "Altre opzioni" non trovato', true);
+      return toast('No "More options" button', true);
     }
     const dialogsBefore = new Set(visibleDialogs());
     realClick(more);
@@ -396,18 +396,18 @@ SOFTWARE.
     if (!item) {
       logMenuItems();
       pressEscape();
-      return toast('Voce "Aggiungi all\'album" non trovata (vedi console)', true);
+      return toast('No "Add to album" item in the menu (see console)', true);
     }
     realClick(item);
 
-    // Il selettore è il dialogo nuovo, di solito con la voce "Nuovo album".
+    // The picker is the new dialog, usually the one with "New album".
     const picker = await waitFor(() => {
       const fresh = visibleDialogs().filter((d) => !dialogsBefore.has(d));
       return fresh.find((d) => find(RX.newAlbum, { root: d, by: 'any' })) || fresh[fresh.length - 1];
     }, 3000);
-    if (!picker) return toast('Selettore album non comparso', true);
+    if (!picker) return toast('The album picker did not open', true);
 
-    // L'elenco si carica a poco a poco: aspettiamo, poi scorriamo se serve.
+    // The list loads in parts: wait, then scroll if needed.
     let entry = await waitFor(() => findAlbumEntry(picker, name), 1500);
     for (let i = 0; !entry && i < 60; i++) {
       const sc = scrollableIn(picker);
@@ -415,18 +415,18 @@ SOFTWARE.
       const prev = sc.scrollTop;
       sc.scrollTop += sc.clientHeight * 0.8;
       entry = await waitFor(() => findAlbumEntry(picker, name), 300);
-      if (!entry && sc.scrollTop === prev) break;   // in fondo all'elenco
+      if (!entry && sc.scrollTop === prev) break;   // end of the list
     }
     if (!entry) {
       closeDialog(picker);
-      return toast(`Album "${name}" non trovato nell'elenco`, true);
+      return toast(`Album "${name}" is not in the list`, true);
     }
 
     entry.scrollIntoView({ block: 'center' });
     realClick(entry);
     await waitFor(() => !isVisible(picker), 3000);
     count('albums');
-    toast(`Aggiunta a "${name}"`);
+    toast(`Added to "${name}"`);
 
     if (ALBUM_THEN_NEXT) {
       await sleep(300);
@@ -435,17 +435,17 @@ SOFTWARE.
   }
 
   function undo() {
-    // Il pulsante "Annulla" della barra in basso (snackbar), non quello dei dialoghi.
+    // The Undo button of the notification at the bottom, not a dialog's Cancel.
     const dialogs = confirmDialogs();
     const candidates = [...document.querySelectorAll(CLICKABLE)].filter(
       (b) => isVisible(b) && RX.undo.test(ariaOf(b) || textOf(b)) && !dialogs.some((d) => d.contains(b))
     );
     const btn = candidates[candidates.length - 1];
-    if (!btn) return toast('Niente da annullare', true);
+    if (!btn) return toast('Nothing to undo', true);
     realClick(btn);
     const last = history.pop();
     if (last) bump(last, -1);
-    toast('Annullato ↶');
+    toast('Undone ↶');
   }
 
   function next() {
@@ -457,15 +457,14 @@ SOFTWARE.
     return true;
   }
 
-  // --- Modalità duplicati ----------------------------------------------------
-  // La foto "A" resta bloccata a sinistra, a destra c'è quella aperta ("B").
-  // Si sceglie quale tenere; con raffiche di 3+ foto A resta e si confronta
-  // con la successiva.
+  // --- Comparison mode -------------------------------------------------------
+  // Photo A stays on the left, the open photo (B) is on the right. When A is
+  // kept, it is compared with the next photo, which handles bursts of 3 or more.
   const dup = { on: false, a: null, b: null, lastUrl: null, staleSrc: null, timer: null, ui: null };
   const inViewer = () => location.pathname.includes('/photo/');
 
-  // Qui serve anche il controllo su opacity: il visualizzatore tiene nel DOM le
-  // foto vicine, trasparenti, nella stessa posizione di quella mostrata.
+  // Opacity is checked here: the viewer keeps the neighbouring photos in the
+  // DOM, transparent, in the same place as the one shown.
   function imgShown(img) {
     const r = img.getBoundingClientRect();
     if (r.width < 50 || r.height < 50) return false;
@@ -477,7 +476,7 @@ SOFTWARE.
     return true;
   }
 
-  // La foto aperta = l'immagine visibile più grande (escluso il nostro overlay).
+  // The open photo is the largest visible image (leaving out our overlay).
   function currentPhoto() {
     let best = null, bestArea = 0;
     for (const img of document.images) {
@@ -502,10 +501,10 @@ SOFTWARE.
     const left = pane('A  ←');
     const right = pane('→  B');
     const bar = el('div', { className: 'gpqk-dupbar' }, [
-      el('kbd', { textContent: '←' }), ' tieni A, elimina B     ',
-      el('kbd', { textContent: '→' }), ' tieni B, elimina A     ',
-      el('kbd', { textContent: '↓' }), ' / ', el('kbd', { textContent: 'Spazio' }), ' tienile entrambe     ',
-      el('kbd', { textContent: 'Esc' }), ' esci',
+      el('kbd', { textContent: '←' }), ' keep A, delete B     ',
+      el('kbd', { textContent: '→' }), ' keep B, delete A     ',
+      el('kbd', { textContent: '↓' }), ' / ', el('kbd', { textContent: 'Space' }), ' keep both     ',
+      el('kbd', { textContent: 'Esc' }), ' leave',
     ]);
     const root = el('div', { id: 'gpqk-dup' }, [left.root, right.root, bar]);
     document.body.append(root);
@@ -516,25 +515,25 @@ SOFTWARE.
   function showPhoto(pane, ph) {
     if (!ph) {
       pane.img.removeAttribute('src');
-      pane.cap.textContent = 'caricamento…';
+      pane.cap.textContent = 'loading…';
       return;
     }
     if (pane.img.getAttribute('src') !== ph.src) pane.img.src = ph.src;
     pane.cap.textContent = ph.label || '';
   }
 
-  // Tiene aggiornato il riquadro B. Dopo un cambio foto l'immagine vecchia può
-  // restare a schermo un attimo: la scartiamo finché non arriva quella nuova.
+  // Keeps pane B up to date. After the photo changes, the previous image can stay
+  // on screen for a moment: it is skipped until the new one is there.
   function syncDup() {
     if (!dup.on) return;
-    if (!inViewer()) return exitDup('Visualizzatore chiuso');
+    if (!inViewer()) return exitDup('The viewer was closed');
     if (location.href !== dup.lastUrl) {
       dup.staleSrc = dup.b ? dup.b.src : dup.staleSrc;
       dup.lastUrl = location.href;
       dup.b = null;
       showPhoto(dup.ui.right, null);
     }
-    if (location.href === dup.a.url) return;     // siamo tornati su A per eliminarla
+    if (location.href === dup.a.url) return;     // back on A to delete it
     const cur = currentPhoto();
     if (cur && cur.src !== dup.a.src && cur.src !== dup.staleSrc) {
       dup.b = cur;
@@ -559,16 +558,16 @@ SOFTWARE.
 
   async function toggleDup() {
     if (dup.on) return exitDup();
-    if (!inViewer()) return toast('Apri prima una foto', true);
+    if (!inViewer()) return toast('Open a photo first', true);
     const a = currentPhoto();
-    if (!a) return toast('Foto non trovata sullo schermo', true);
+    if (!a) return toast('No photo found on screen', true);
     dupUI().root.style.display = '';
     Object.assign(dup, { on: true, b: null, lastUrl: location.href, staleSrc: a.src });
     setA(a);
     showPhoto(dup.ui.right, null);
     dup.timer = setInterval(syncDup, 200);
-    toast('Modalità duplicati');
-    if (!(await goNext())) exitDup('Non ci sono altre foto');
+    toast('Comparison mode');
+    if (!(await goNext())) exitDup('No more photos');
   }
 
   function exitDup(msg) {
@@ -576,49 +575,49 @@ SOFTWARE.
     dup.on = false;
     clearInterval(dup.timer);
     dup.ui.root.style.display = 'none';
-    toast(msg || 'Modalità duplicati chiusa', !!msg);
+    toast(msg || 'Comparison mode closed', !!msg);
   }
 
   function needB() {
     if (dup.b && dup.b.url === location.href) return true;
-    toast('Aspetta che la foto B si carichi', true);
+    toast('Wait for photo B to load', true);
     return false;
   }
 
-  // ← : elimina B (quella aperta), A resta e si confronta con la successiva.
+  // ← : delete B (the open photo); A stays and is compared with the next one.
   async function dupKeepA() {
     if (!needB()) return;
     const before = location.href;
-    if (!(await trash())) return exitDup('Eliminazione non confermata: controlla');
+    if (!(await trash())) return exitDup('The delete was not confirmed: check the page');
     await waitFor(() => location.href !== before, ADVANCE_TIMEOUT);
-    if (location.href === before || location.href === dup.a.url) exitDup('Fine delle foto');
+    if (location.href === before || location.href === dup.a.url) exitDup('No more photos');
   }
 
-  // → : torna su A, la elimina, poi B diventa la nuova A.
+  // → : go back to A, delete it, then B becomes the new A.
   async function dupKeepB() {
     if (!needB()) return;
     const b = dup.b;
     await goPrev();
     if (location.href !== dup.a.url) {
-      return toast('Non riesco a tornare sulla foto A: niente eliminato', true);
+      return toast('Could not go back to photo A: nothing deleted', true);
     }
     await sleep(300);
-    if (!(await trash())) return exitDup('Eliminazione non confermata: controlla');
+    if (!(await trash())) return exitDup('The delete was not confirmed: check the page');
     await waitFor(() => location.href !== dup.a.url, ADVANCE_TIMEOUT);
     if (location.href !== b.url) {
-      return exitDup('Dopo l\'eliminazione non sono su B: controlla');
+      return exitDup('After deleting, the open photo is not B: check the page');
     }
     setA(b);
     await sleep(300);
-    if (!(await goNext())) exitDup('Fine delle foto');
+    if (!(await goNext())) exitDup('No more photos');
   }
 
-  // ↓ / Spazio : diverse, tienile entrambe. B diventa la nuova A.
+  // ↓ / Space : different photos, keep both. B becomes the new A.
   async function dupKeepBoth() {
     if (!needB()) return;
     count('kept');
     setA(dup.b);
-    if (!(await goNext())) exitDup('Fine delle foto');
+    if (!(await goNext())) exitDup('No more photos');
   }
 
   const DUP_ACTIONS = {
@@ -630,7 +629,7 @@ SOFTWARE.
   };
 
   // ---------------------------------------------------------------------------
-  // HUD (contatore + guida tasti) e toast
+  // Panel (counts and key list) and messages
   // ---------------------------------------------------------------------------
   const el = (tag, props = {}, children = []) => {
     const n = document.createElement(tag);
@@ -697,18 +696,18 @@ SOFTWARE.
   }));
 
   const statsLine = el('div');
-  const keyLabel = (x) => (x === ' ' ? 'Spazio' : x.toUpperCase());
+  const keyLabel = (x) => (x === ' ' ? 'Space' : x.toUpperCase());
   const helpRow = (action, label) =>
     el('div', {}, [...KEYS[action].map((x) => el('kbd', { textContent: keyLabel(x) })), ' ' + label]);
   const help = el('div', { className: 'gpqk-help' }, [
-    helpRow('archive', 'archivia'),
-    helpRow('trash', AUTO_CONFIRM_TRASH ? 'elimina (senza conferma)' : 'elimina'),
-    helpRow('favorite', 'preferito'),
-    helpRow('next', 'tieni e vai avanti'),
-    helpRow('undo', 'annulla ultima'),
-    helpRow('dupMode', 'modalità duplicati'),
-    helpRow('toggleHud', 'mostra/nascondi guida'),
-    el('div', {}, [el('kbd', { textContent: '1–9' }), ' album  ', el('kbd', { textContent: 'Maiusc+1–9' }), ' assegna']),
+    helpRow('archive', 'archive'),
+    helpRow('trash', AUTO_CONFIRM_TRASH ? 'delete (confirmed)' : 'delete'),
+    helpRow('favorite', 'favourite'),
+    helpRow('next', 'keep, next photo'),
+    helpRow('undo', 'undo'),
+    helpRow('dupMode', 'compare similar photos'),
+    helpRow('toggleHud', 'show/hide this list'),
+    el('div', {}, [el('kbd', { textContent: '1–9' }), ' album  ', el('kbd', { textContent: 'Shift+1–9' }), ' assign']),
   ]);
   const albumsBox = el('div', { className: 'gpqk-help gpqk-albums' });
   const hud = el('div', { id: 'gpqk-hud' }, [statsLine, help, albumsBox]);
@@ -725,16 +724,16 @@ SOFTWARE.
     const s = loadStats();
     const rows = [
       ['', ...['📦', '🗑', '✓', '★', '🗂']],
-      ['Sessione', ...FIELDS.map((f) => stats[f])],
-      ['Oggi', ...FIELDS.map((f) => (s.days[today()] || {})[f] || 0)],
-      ['Totale', ...FIELDS.map((f) => s.total[f])],
+      ['Session', ...FIELDS.map((f) => stats[f])],
+      ['Today', ...FIELDS.map((f) => (s.days[today()] || {})[f] || 0)],
+      ['Total', ...FIELDS.map((f) => s.total[f])],
     ];
     statsLine.replaceChildren(el('div', { className: 'gpqk-stats' },
       rows.flatMap((r, i) => r.map((c, j) =>
         i && j ? el('b', { textContent: c }) : el('span', { textContent: c })))));
   }
 
-  // Un'altra scheda ha aggiornato le statistiche.
+  // Another tab has changed the counts.
   window.addEventListener('storage', (e) => { if (e.key === STATS_KEY) renderHud(); });
 
   let hudHidden = false;
@@ -761,7 +760,7 @@ SOFTWARE.
   renderAlbums();
 
   // ---------------------------------------------------------------------------
-  // Listener tastiera
+  // Keyboard
   // ---------------------------------------------------------------------------
   const ACTIONS = { archive, trash, favorite, undo, next, toggleHud, dupMode: toggleDup };
   const keyMap = new Map();
@@ -769,30 +768,30 @@ SOFTWARE.
     for (const key of keys) keyMap.set(key, ACTIONS[action]);
   }
 
-  // Le azioni che passano alla foto successiva restituiscono true: prima di
-  // accettare un altro comando aspettiamo che Google Photos abbia davvero
-  // cambiato foto, altrimenti le richieste si accumulano e l'app si blocca.
-  const ADVANCE_TIMEOUT = 5000;  // ms massimi di attesa del cambio foto
-  const MIN_GAP = 300;           // ms minimi tra un comando e l'altro
+  // Actions that move to the next photo return true. Before taking another key,
+  // wait until Google Photos has opened the next photo: otherwise the requests
+  // pile up and the page hangs while it works through them.
+  const ADVANCE_TIMEOUT = 5000;  // longest wait for the next photo, in ms
+  const MIN_GAP = 300;           // shortest gap between two actions, in ms
 
   async function waitForAdvance(before) {
-    if (!location.pathname.includes('/photo/')) return sleep(600); // griglia: niente URL da guardare
+    if (!location.pathname.includes('/photo/')) return sleep(600); // grid: no address to watch
     const changed = await waitFor(() => location.href !== before, ADVANCE_TIMEOUT, 50);
     if (!changed) {
-      log('la foto non è cambiata entro', ADVANCE_TIMEOUT, 'ms');
-      toast('Google Photos è lento: aspetto prima di continuare', true);
+      log('the photo did not change within', ADVANCE_TIMEOUT, 'ms');
+      toast('Google Photos is slow: waiting before the next key', true);
     }
   }
 
   let busy = false;
 
   window.addEventListener('keydown', async (e) => {
-    if (!e.isTrusted) return;                       // ignora i tasti simulati da noi
+    if (!e.isTrusted) return;                       // skip the keys this script sends
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (isTyping(e.target) || isTyping(document.activeElement)) return;
-    if (confirmDialogs().length) return;            // non interferire coi dialoghi aperti
+    if (confirmDialogs().length) return;            // leave open dialogs alone
 
-    // Numeri letti da e.code: con Maiusc e.key diventa "!", "\"", ... a seconda del layout.
+    // Digits come from e.code: with Shift, e.key is "!", "\"" and so on, depending on the layout.
     const digit = (/^(?:Digit|Numpad)([1-9])$/.exec(e.code) || [])[1];
     let fn;
     if (digit) fn = e.shiftKey ? () => assignAlbum(digit) : () => addToAlbum(digit);
@@ -804,7 +803,7 @@ SOFTWARE.
 
     e.preventDefault();
     e.stopImmediatePropagation();
-    if (e.repeat) return;                           // tasto tenuto premuto: un solo comando
+    if (e.repeat) return;                           // key held down: one action only
     if (busy) {
       hud.classList.add('gpqk-busy');
       return;
@@ -812,19 +811,19 @@ SOFTWARE.
     busy = true;
     hud.classList.add('gpqk-wait');
     const before = location.href;
-    log('azione', fn.name);
+    log('action', fn.name);
     try {
       const advanced = await fn();
       if (advanced === true) await waitForAdvance(before);
       await sleep(MIN_GAP);
     } catch (err) {
       console.error('[GPQK]', err);
-      toast('Errore: ' + err.message, true);
+      toast('Error: ' + err.message, true);
     } finally {
       busy = false;
       hud.classList.remove('gpqk-wait', 'gpqk-busy');
     }
   }, true);
 
-  log('caricato ✔ — digita gpqkDump() in console per vedere i pulsanti visibili');
+  log('loaded. Type gpqkDump() in the console to list the visible buttons');
 })();

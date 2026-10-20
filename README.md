@@ -100,7 +100,7 @@ After `A`, `D` or `Space` the script waits until Google Photos has opened the ne
 before it takes another key, for up to 5 seconds, and leaves at least 300 ms between two
 actions. While it waits, the panel has a yellow border. A key pressed during the wait is
 dropped and the border turns red. If the next photo has not opened after 5 seconds, the
-message "Google Photos è lento" appears.
+message "Google Photos is slow" appears.
 
 The keys are set in the `KEYS` object at the top of the script.
 
@@ -169,9 +169,9 @@ The other keys (`A`, `F`, `Z`, the numbers) keep working during the comparison.
 The panel in the bottom-right corner has a table with five columns: archived (📦), deleted
 (🗑), kept (✓), favourites (★) and added to an album (🗂). It has three rows:
 
-- **Sessione**: since the page was loaded;
-- **Oggi**: since midnight;
-- **Totale**: since the script was installed.
+- **Session**: since the page was loaded;
+- **Today**: since midnight;
+- **Total**: since the script was installed.
 
 The daily and total counts are saved in the browser's local storage, so they survive a
 reload and a restart. They are per browser: another computer or another browser starts from
@@ -239,8 +239,8 @@ the script need the new text. Open an issue with the `gpqkDump()` output.
 
 ## Limitations
 
-- The messages of the script are in Italian. The buttons are recognised in Italian and
-  English Google Photos only.
+- The buttons are recognised in Italian and English Google Photos only. With Google
+  Photos in another language, the keys find no buttons.
 - Written and tried in the photo viewer. In the grid, with photos selected, the buttons have
   the same names, but this has not been tried.
 - **`Z` presses the Undo button that is on screen.** Google Photos shows its notifications
@@ -249,7 +249,7 @@ the script need the new text. Open an issue with the `gpqkDump()` output.
   after the mistake. The counts then subtract the last action, which may not be the one
   undone.
 - On the last photo of an album, `Space` waits the full 5 seconds and shows the message
-  "Google Photos è lento", because there is no next photo to open.
+  "Google Photos is slow", because there is no next photo to open.
 - `F` counts a press as a favourite, also when it removes a photo from the favourites.
 
 ## Releasing
