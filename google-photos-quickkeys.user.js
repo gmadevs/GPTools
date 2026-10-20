@@ -6,8 +6,8 @@
 // @downloadURL  https://raw.githubusercontent.com/gmadevs/GPTools/main/google-photos-quickkeys.user.js
 // @updateURL    https://raw.githubusercontent.com/gmadevs/GPTools/main/google-photos-quickkeys.user.js
 // @license      MIT
-// @version      0.7.0
-// @description  Single keys for sorting photos on Google Photos: archive, delete with the dialog confirmed, favourite, albums on keys 1-9, side-by-side comparison of similar photos, saved counts.
+// @version      0.8.0
+// @description  Single keys for sorting photos on Google Photos: archive, delete with the dialog confirmed, favourite and archive, albums on keys 1-9, side-by-side comparison of similar photos, saved counts and photos left.
 // @match        https://photos.google.com/*
 // @run-at       document-idle
 // @grant        none
@@ -57,9 +57,13 @@ SOFTWARE.
     next: [' '],          // keep the photo and go to the next one
     toggleHud: ['h'],
     dupMode: ['c'],       // comparison mode for similar photos
+    setLeft: ['t'],       // set how many photos are left to sort
   };
   // In comparison mode: ← keep A, → keep B, ↓/Space keep both, Esc leave.
   const AUTO_CONFIRM_TRASH = true;   // press "Move to trash" in the dialog
+  // After F adds a favourite: 'archive' (archive it, which opens the next photo),
+  // 'next' (go to the next photo) or 'stay'. Removing a favourite always stays.
+  const FAVORITE_THEN = 'archive';
   const DEBUG = false;               // true = log to the console (Cmd+Opt+J)
 
   // Albums on the number keys: key 1–9 → exact album name. They can also be
@@ -81,6 +85,8 @@ SOFTWARE.
     cancel: /^(annulla|cancel)$/i,
     undo: /^(annulla|undo)$/i,
     favorite: /(preferit|favou?rite)/i,
+    unfavorite: /(rimuovi|togli|remove|unfavou?rite)/i,
+    albumCount: /^(\d[\d.,\s]*)\s+(elementi|elemento|items?|foto|photos?)\b/i,
     nextBtn: /(foto successiva|next photo|successiv|^next$|^avanti$)/i,
     prevBtn: /(foto precedente|previous photo|precedent|^previous$|^indietro$)/i,
     addToAlbumItem: /^\s*(aggiungi (all|a un|ad un)['’]?\s*album|add to( an)? album)/i,
@@ -226,9 +232,59 @@ SOFTWARE.
     try { localStorage.setItem(STATS_KEY, JSON.stringify(s)); } catch (_) {}
   }
 
+  let sessionStart = 0;              // time of the first action, for the pace
+
   function count(field) {
+    if (!sessionStart) sessionStart = Date.now();
     bump(field, 1);
     history.push(field);
+  }
+
+  // --- Photos left to sort ---------------------------------------------------
+  // T sets the number. Each archive, delete or keep takes one off it, and Undo
+  // puts it back, because the number is worked out from the saved counts.
+  const LEFT_KEY = 'gpqk-left';
+  const sortedOf = (t) => t.archived + t.trashed + t.kept;
+
+  function photosLeft() {
+    let l;
+    try { l = JSON.parse(localStorage.getItem(LEFT_KEY) || 'null'); } catch (_) {}
+    if (!l || typeof l.left !== 'number') return null;
+    const left = Math.max(0, l.left - (sortedOf(loadStats().total) - l.sortedAt));
+    return { left, start: l.left };
+  }
+
+  function saveLeft(left, sortedAt) {
+    try {
+      if (left == null) localStorage.removeItem(LEFT_KEY);
+      else localStorage.setItem(LEFT_KEY, JSON.stringify({ left, sortedAt }));
+    } catch (_) {}
+  }
+
+  // On an album page the header gives the number of items: offered as a start.
+  function albumItemCount() {
+    if (!/\/(album|share)\//.test(location.pathname)) return null;
+    for (const n of document.querySelectorAll('div, span')) {
+      if (n.children.length) continue;
+      const m = RX.albumCount.exec(textOf(n));
+      if (m) return parseInt(m[1].replace(/\D/g, ''), 10);
+    }
+    return null;
+  }
+
+  function setLeft() {
+    const cur = photosLeft();
+    const guess = cur ? cur.left : albumItemCount();
+    const v = prompt('Photos left to sort (empty = stop counting):', guess != null ? String(guess) : '');
+    if (v === null) return;
+    const n = parseInt(v.replace(/\D/g, ''), 10);
+    if (isNaN(n)) {
+      saveLeft(null);
+      toast('Not counting the photos left');
+    } else {
+      saveLeft(n, sortedOf(loadStats().total));
+      toast(`${n.toLocaleString('en-GB')} photos left`);
+    }
   }
 
   // In the console: gpqkStats() prints the counts, gpqkResetStats() deletes them.
@@ -238,7 +294,9 @@ SOFTWARE.
     return s;
   };
   window.gpqkResetStats = () => {
+    const left = photosLeft();
     try { localStorage.removeItem(STATS_KEY); } catch (_) {}
+    if (left) saveLeft(left.left, 0);  // keep the photos left as they are
     Object.assign(stats, emptyStats());
     history.length = 0;
     renderHud();
@@ -322,15 +380,22 @@ SOFTWARE.
     }
   }
 
-  function favorite() {
+  async function favorite() {
     const btn = find(RX.favorite, { by: 'aria' });
     if (!btn) {
       if (DEBUG) dump();
       return toast('No favourite button', true);
     }
+    // On a favourite the button reads "Remove from favourites" (or is pressed):
+    // then F only removes it, and nothing else happens.
+    const removing = RX.unfavorite.test(ariaOf(btn)) || btn.getAttribute('aria-pressed') === 'true';
     realClick(btn);
+    if (removing) return toast('Removed from favourites');
     count('favorited');
     toast('Favourite ★');
+    if (FAVORITE_THEN === 'stay') return;
+    await sleep(300);
+    return FAVORITE_THEN === 'archive' ? archive() : next();
   }
 
   // --- Albums on the number keys --------------------------------------------
@@ -661,6 +726,7 @@ SOFTWARE.
         column-gap: 8px; text-align: right; font-variant-numeric: tabular-nums;
       }
       #gpqk-hud .gpqk-stats span:nth-child(6n+1) { text-align: left; color: #bdc1c6; }
+      #gpqk-hud .gpqk-left { margin-top: 4px; padding-top: 4px; border-top: 1px solid #5f6368; }
       #gpqk-hud .gpqk-albums { border-top: 1px solid #5f6368; padding-top: 6px; }
       #gpqk-dup {
         position: fixed; inset: 0; z-index: 2147483646; background: rgba(0,0,0,.95);
@@ -696,6 +762,7 @@ SOFTWARE.
   }));
 
   const statsLine = el('div');
+  const leftLine = el('div', { className: 'gpqk-left' });
   const keyLabel = (x) => (x === ' ' ? 'Space' : x.toUpperCase());
   const helpRow = (action, label) =>
     el('div', {}, [...KEYS[action].map((x) => el('kbd', { textContent: keyLabel(x) })), ' ' + label]);
@@ -706,11 +773,12 @@ SOFTWARE.
     helpRow('next', 'keep, next photo'),
     helpRow('undo', 'undo'),
     helpRow('dupMode', 'compare similar photos'),
+    helpRow('setLeft', 'set photos left'),
     helpRow('toggleHud', 'show/hide this list'),
     el('div', {}, [el('kbd', { textContent: '1–9' }), ' album  ', el('kbd', { textContent: 'Shift+1–9' }), ' assign']),
   ]);
   const albumsBox = el('div', { className: 'gpqk-help gpqk-albums' });
-  const hud = el('div', { id: 'gpqk-hud' }, [statsLine, help, albumsBox]);
+  const hud = el('div', { id: 'gpqk-hud' }, [statsLine, leftLine, help, albumsBox]);
 
   function renderAlbums() {
     const entries = Object.entries(albums()).sort(([a], [b]) => a.localeCompare(b));
@@ -731,10 +799,28 @@ SOFTWARE.
     statsLine.replaceChildren(el('div', { className: 'gpqk-stats' },
       rows.flatMap((r, i) => r.map((c, j) =>
         i && j ? el('b', { textContent: c }) : el('span', { textContent: c })))));
+    renderLeft();
+  }
+
+  // "Left: 12,345 (37% done) · about 3 h 20 min at this pace". The time appears
+  // after 10 photos sorted in this session.
+  function renderLeft() {
+    const pl = photosLeft();
+    leftLine.style.display = pl ? '' : 'none';
+    if (!pl) return;
+    const done = pl.start ? Math.round((100 * (pl.start - pl.left)) / pl.start) : 100;
+    const parts = ['Left: ', el('b', { textContent: pl.left.toLocaleString('en-GB') }), ` (${done}% done)`];
+    const sorted = sortedOf(stats);
+    if (sorted >= 10 && pl.left > 0) {
+      const mins = Math.round((pl.left * (Date.now() - sessionStart)) / sorted / 60000);
+      const time = mins >= 60 ? `${Math.floor(mins / 60)} h ${mins % 60} min` : `${mins} min`;
+      parts.push(` · about ${time} at this pace`);
+    }
+    leftLine.replaceChildren(...parts);
   }
 
   // Another tab has changed the counts.
-  window.addEventListener('storage', (e) => { if (e.key === STATS_KEY) renderHud(); });
+  window.addEventListener('storage', (e) => { if (e.key === STATS_KEY || e.key === LEFT_KEY) renderHud(); });
 
   let hudHidden = false;
   try { hudHidden = localStorage.getItem('gpqk-hud-hidden') === '1'; } catch (_) {}
@@ -762,7 +848,7 @@ SOFTWARE.
   // ---------------------------------------------------------------------------
   // Keyboard
   // ---------------------------------------------------------------------------
-  const ACTIONS = { archive, trash, favorite, undo, next, toggleHud, dupMode: toggleDup };
+  const ACTIONS = { archive, trash, favorite, undo, next, toggleHud, dupMode: toggleDup, setLeft };
   const keyMap = new Map();
   for (const [action, keys] of Object.entries(KEYS)) {
     for (const key of keys) keyMap.set(key, ACTIONS[action]);

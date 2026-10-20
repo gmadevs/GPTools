@@ -24,15 +24,16 @@ userscript puts the common actions on single keys that sit under the left hand:
 ```
 A           archive
 D           delete, confirmed automatically
-F           favourite
+F           favourite, then archive
 Space       keep, go to the next photo
 Z           undo
 1 … 9       add to an album you chose for that key
 C           compare two similar photos side by side and keep one
+T           set how many photos are left to sort
 ```
 
 A panel in the bottom-right corner counts what you have done in this session, today and in
-total.
+total, and how many photos are left.
 
 > Unofficial. Not affiliated with or endorsed by Google.
 
@@ -43,9 +44,11 @@ total.
 - [Installing](#installing)
 - [The keys](#the-keys)
 - [Deleting](#deleting)
+- [Favourites](#favourites)
 - [Albums on the number keys](#albums-on-the-number-keys)
 - [Comparing similar photos](#comparing-similar-photos)
 - [The panel and the statistics](#the-panel-and-the-statistics)
+- [Photos left to sort](#photos-left-to-sort)
 - [Settings](#settings)
 - [How it works](#how-it-works)
 - [When a key does nothing](#when-a-key-does-nothing)
@@ -77,12 +80,13 @@ this repository.
 |---|---|
 | `A` | Archive the photo |
 | `D` or `X` | Move the photo to the bin and confirm the dialog |
-| `F` | Add to favourites, or remove from them if the photo is already a favourite |
+| `F` | Add to favourites and archive the photo. On a favourite, remove it from the favourites. |
 | `Space` | Keep the photo and go to the next one |
 | `Z` or `U` | Press **Undo** on the notification at the bottom of the page |
 | `1` to `9` | Add the photo to the album assigned to that key |
 | `Shift`+`1` to `9` | Assign an album to that key |
 | `C` | Turn the comparison mode on or off |
+| `T` | Set the number of photos left to sort |
 | `H` | Show or hide the list of keys in the panel |
 
 The keys work in the photo viewer, with one photo open. After archiving or deleting, Google
@@ -96,7 +100,7 @@ The script ignores a key:
 - when it is held down (the repeats the keyboard sends are dropped, so holding `D` deletes
   one photo).
 
-After `A`, `D` or `Space` the script waits until Google Photos has opened the next photo
+After `A`, `D`, `F` or `Space` the script waits until Google Photos has opened the next photo
 before it takes another key, for up to 5 seconds, and leaves at least 300 ms between two
 actions. While it waits, the panel has a yellow border. A key pressed during the wait is
 dropped and the border turns red. If the next photo has not opened after 5 seconds, the
@@ -114,6 +118,23 @@ If the dialog does not appear, or its button is not found, the script stops and 
 message asks you to check the page and press `Enter` yourself.
 
 To keep the confirmation dialog, set `AUTO_CONFIRM_TRASH = false`.
+
+## Favourites
+
+`F` presses the favourite button, waits 300 ms and archives the photo, which opens the next
+one. The photo is in the favourites and out of the main photo view.
+
+If the photo is already a favourite, `F` removes it from the favourites and does nothing
+else. The script tells a favourite from the button: its label contains "remove",
+"unfavorite", "rimuovi" or "togli", or the button is in the pressed state.
+
+`FAVORITE_THEN` at the top of the script sets what happens after a favourite is added:
+
+| Value | After the favourite |
+|---|---|
+| `'archive'` | archive the photo (the default) |
+| `'next'` | go to the next photo, without archiving |
+| `'stay'` | stay on the photo |
 
 ## Albums on the number keys
 
@@ -187,6 +208,30 @@ Two commands in the browser console (`Cmd`+`Option`+`J` in Chrome on macOS):
 
 `H` hides the list of keys and albums. The counts stay visible. The choice is saved.
 
+## Photos left to sort
+
+The script cannot read how many photos a library has, so it asks for the number.
+
+1. Press `T`.
+2. Type how many photos are left to sort, and press **OK**. On an album page, the field
+   starts with the number of items the album header shows.
+
+The panel then shows a line such as:
+
+```
+Left: 12,345 (3% done) · about 6 h 40 min at this pace
+```
+
+Each archive, delete or keep (`A`, `D`, `F` with archive, `Space`, and the arrows in the
+comparison) takes one photo off. Adding to an album and adding a favourite without archiving
+do not, because the photo stays where it is. `Z` puts one photo back.
+
+The percentage is counted from the number you typed. The time appears after 10 photos in
+the session, and is the number left divided by the pace of this session.
+
+The number is saved in the browser with the other counts. Press `T` again to correct it, or
+leave the field empty to remove the line. `gpqkResetStats()` keeps the number of photos left.
+
 ## Settings
 
 At the top of the script:
@@ -198,10 +243,11 @@ At the top of the script:
 | `DEBUG` | `false` | write what the script does to the console |
 | `ALBUMS` | empty | albums for the number keys |
 | `ALBUM_THEN_NEXT` | `false` | go to the next photo after adding to an album |
+| `FAVORITE_THEN` | `'archive'` | what `F` does after adding a favourite: `'archive'`, `'next'` or `'stay'` |
 
 Tampermonkey replaces the whole file when it updates the script, so changes made in the
-editor are lost on the next update. Albums assigned with `Shift` and a number are saved in
-the browser and are kept.
+editor are lost on the next update. Albums assigned with `Shift` and a number, and the
+number of photos left, are saved in the browser and are kept.
 
 ## How it works
 
@@ -250,7 +296,9 @@ the script need the new text. Open an issue with the `gpqkDump()` output.
   undone.
 - On the last photo of an album, `Space` waits the full 5 seconds and shows the message
   "Google Photos is slow", because there is no next photo to open.
-- `F` counts a press as a favourite, also when it removes a photo from the favourites.
+- If Google Photos labels the favourite button of a favourite in a way the script does not
+  recognise, `F` on a favourite removes it and archives the photo. Check this on one photo
+  before you rely on it.
 
 ## Releasing
 
