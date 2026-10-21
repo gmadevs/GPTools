@@ -30,6 +30,7 @@ Z           undo
 1 … 9       add to an album you chose for that key
 C           compare two similar photos side by side and keep one
 T           set how many photos are left to sort
+Alt+K       turn all the keys on or off (Option+K on a Mac)
 ```
 
 A panel in the bottom-right corner counts what you have done in this session, today and in
@@ -87,16 +88,19 @@ this repository.
 | `Shift`+`1` to `9` | Assign an album to that key |
 | `C` | Turn the comparison mode on or off |
 | `T` | Set the number of photos left to sort |
-| `H` | Show or hide the list of keys in the panel |
+| `H` | Change the panel: counts and keys, counts only, hidden |
+| `Alt`+`K` | Turn all the keys on or off (`Option`+`K` on a Mac) |
 
 The keys work in the photo viewer, with one photo open. After archiving or deleting, Google
 Photos opens the next photo by itself.
 
 The script ignores a key:
 
-- while you type in a text field (search, description, album name);
+- while the keys are turned off with `Alt`+`K`;
+- while you type in a text field (search, description, album name), also one inside a
+  shadow root;
 - while a confirmation dialog is open;
-- when it is pressed with `Ctrl`, `Cmd` or `Alt`;
+- when it is pressed with `Ctrl`, `Cmd` or `Alt` (except `Alt`+`K`);
 - when it is held down (the repeats the keyboard sends are dropped, so holding `D` deletes
   one photo).
 
@@ -107,6 +111,17 @@ dropped and the border turns red. If the next photo has not opened after 5 secon
 message "Google Photos is slow" appears.
 
 The keys are set in the `KEYS` object at the top of the script.
+
+### Turning the keys off
+
+`Alt`+`K` (`Option`+`K` on a Mac) turns all the keys off, for example before you type in a
+field the script does not recognise as one. The panel then shows only "QuickKeys off" and
+the shortcut. Press `Alt`+`K` again to turn the keys on. The ⏻ button at the top right of
+the panel does the same with a click. The state is saved in the browser, so the keys stay
+off after a reload until you turn them on.
+
+The shortcut is set in `TOGGLE_KEY` at the top of the script. It is read from the physical
+key, so it is the same on any keyboard layout.
 
 ## Deleting
 
@@ -206,7 +221,13 @@ Two commands in the browser console (`Cmd`+`Option`+`J` in Chrome on macOS):
 - `gpqkStats()` prints the total and the counts for each day;
 - `gpqkResetStats()` deletes all the counts.
 
-`H` hides the list of keys and albums. The counts stay visible. The choice is saved.
+`H` changes the panel in turn:
+
+1. counts, photos left, keys and albums (the default);
+2. counts and photos left only;
+3. hidden. The messages at the top of the page still appear.
+
+A message names the mode each time, and the mode is saved in the browser.
 
 ## Photos left to sort
 
@@ -244,12 +265,17 @@ At the top of the script:
 | `ALBUMS` | empty | albums for the number keys |
 | `ALBUM_THEN_NEXT` | `false` | go to the next photo after adding to an album |
 | `FAVORITE_THEN` | `'archive'` | what `F` does after adding a favourite: `'archive'`, `'next'` or `'stay'` |
+| `TOGGLE_KEY` | `Alt`+`K` | the key that turns all the keys on or off |
 
 Tampermonkey replaces the whole file when it updates the script, so changes made in the
 editor are lost on the next update. Albums assigned with `Shift` and a number, and the
 number of photos left, are saved in the browser and are kept.
 
 ## How it works
+
+The script starts at `document-start` and adds its key listener then. The extension usually
+runs it before the Google Photos code, so a key that both use reaches the script first. The
+rest of the script waits until the page has loaded.
 
 The script clicks the buttons of the Google Photos page. It finds them by their
 `aria-label` or text, in Italian and English: **Elimina** / **Delete**, **Altre opzioni** /
