@@ -6,7 +6,7 @@
 // @downloadURL  https://raw.githubusercontent.com/gmadevs/GPTools/main/google-photos-quickkeys.user.js
 // @updateURL    https://raw.githubusercontent.com/gmadevs/GPTools/main/google-photos-quickkeys.user.js
 // @license      MIT
-// @version      0.9.0
+// @version      0.9.1
 // @description  Single keys for sorting photos on Google Photos: archive, delete with the dialog confirmed, favourite and archive, albums on keys 1-9, side-by-side comparison of similar photos, saved counts and photos left.
 // @match        https://photos.google.com/*
 // @run-at       document-start
@@ -84,13 +84,14 @@ SOFTWARE.
   };
   const ALBUM_THEN_NEXT = false;     // true = go to the next photo after adding
 
-  // Button labels in Italian and English Google Photos.
+  // Button labels in Italian and English Google Photos. British English says
+  // "bin" where American English says "trash".
   const RX = {
-    trashBtn: /^(elimina|delete|sposta nel cestino|move to trash|cestino|trash)$/i,
+    trashBtn: /^(elimina|delete|sposta nel cestino|move to (trash|bin)|cestino|trash|bin)$/i,
     moreBtn: /^(altre opzioni|more options|altro|more)$/i,
     // No \b: the item text runs into the shortcut shown beside it ("ArchiveShift+A").
     archiveItem: /^\s*(archivia|archive)(?!zion|d)/i,
-    confirmTrash: /(sposta nel cestino|nel cestino|move to trash|^elimina|^delete|rimuovi|remove)/i,
+    confirmTrash: /(sposta nel cestino|nel cestino|move to (trash|bin)|^elimina|^delete|rimuovi|remove)/i,
     cancel: /^(annulla|cancel)$/i,
     undo: /^(annulla|undo)$/i,
     favorite: /(preferit|favou?rite)/i,

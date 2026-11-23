@@ -126,7 +126,8 @@ key, so it is the same on any keyboard layout.
 ## Deleting
 
 `D` presses the bin button, waits up to 2.5 seconds for the confirmation dialog and presses
-**Move to trash** (**Sposta nel cestino** in Italian). The photo goes to the bin, where
+**Move to bin** (**Move to trash** in American English, **Sposta nel cestino** in Italian).
+The photo goes to the bin, where
 Google Photos keeps it for 60 days, as it does when you delete by hand.
 
 If the dialog does not appear, or its button is not found, the script stops and a red
@@ -278,7 +279,7 @@ runs it before the Google Photos code, so a key that both use reaches the script
 rest of the script waits until the page has loaded.
 
 The script clicks the buttons of the Google Photos page. It finds them by their
-`aria-label` or text, in Italian and English: **Elimina** / **Delete**, **Altre opzioni** /
+`aria-label` or text, in Italian and English: **Elimina** / **Delete** / **Move to bin**, **Altre opzioni** /
 **More options**, **Archivia** / **Archive**, **Aggiungi all'album** / **Add to album**. If a
 button is not found, it sends the Google Photos shortcut instead (`Shift`+`A` for archive,
 `#` for delete), which may not work, because Google Photos does not always accept key
