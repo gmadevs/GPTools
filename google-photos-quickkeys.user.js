@@ -6,7 +6,7 @@
 // @downloadURL  https://raw.githubusercontent.com/gmadevs/GPTools/main/google-photos-quickkeys.user.js
 // @updateURL    https://raw.githubusercontent.com/gmadevs/GPTools/main/google-photos-quickkeys.user.js
 // @license      MIT
-// @version      0.9.1
+// @version      0.10.0
 // @description  Single keys for sorting photos on Google Photos: archive, delete with the dialog confirmed, favourite and archive, albums on keys 1-9, side-by-side comparison of similar photos, saved counts and photos left.
 // @match        https://photos.google.com/*
 // @run-at       document-start
@@ -64,6 +64,7 @@ SOFTWARE.
     toggleHud: ['h'],
     dupMode: ['c'],       // comparison mode for similar photos
     setLeft: ['t'],       // set how many photos are left to sort
+    reselect: ['r'],      // in the grid: select the last selected photos again
   };
   // Turns all the keys on and off. Read from event.code, so it works with any
   // layout; on a Mac, Alt is the Option key.
@@ -82,7 +83,9 @@ SOFTWARE.
     // '1': 'Holidays',
     // '2': 'Family',
   };
-  const ALBUM_THEN_NEXT = false;     // true = go to the next photo after adding
+  // After a number key adds the open photo to an album: 'archive' (archive it,
+  // which opens the next photo), 'next' (go to the next photo) or 'stay'.
+  const ALBUM_THEN = 'archive';
 
   // Button labels in Italian and English Google Photos. British English says
   // "bin" where American English says "trash".
@@ -103,6 +106,8 @@ SOFTWARE.
     anyAlbumItem: /album/i,
     newAlbum: /(nuovo album|new album)/i,
     closeDialog: /^(annulla|cancel|chiudi|close)$/i,
+    clearSelection: /^(clear selection|deseleziona|annulla selezione|cancella selezione)/i,
+    selectedCount: /^(\d[\d.,]*)\s+(selected|selezionat[aeio])$/i,
   };
 
   const log = (...a) => DEBUG && console.log('%c[GPQK]', 'color:#1a73e8;font-weight:bold', ...a);
@@ -260,10 +265,11 @@ SOFTWARE.
 
     let sessionStart = 0;              // time of the first action, for the pace
 
-    function count(field) {
+    // n > 1 when one action covers a selection of photos in the grid.
+    function count(field, n = 1) {
       if (!sessionStart) sessionStart = Date.now();
-      bump(field, 1);
-      history.push(field);
+      bump(field, n);
+      history.push([field, n]);
     }
 
     // --- Photos left to sort ---------------------------------------------------
@@ -351,6 +357,8 @@ SOFTWARE.
     }
 
     async function archive() {
+      // In the grid, A archives the selected photos: count all of them.
+      const n = inViewer() ? 1 : selectionSize();
       const more = find(RX.moreBtn, { by: 'aria' });
       if (more) {
         realClick(more);
@@ -358,8 +366,8 @@ SOFTWARE.
         if (!item) logMenuItems();
         if (item) {
           realClick(item);
-          count('archived');
-          toast('Archived');
+          count('archived', n);
+          toast(n > 1 ? `${n} photos archived` : 'Archived');
           return true;
         }
         log('no "Archive" item in the menu');
@@ -519,10 +527,94 @@ SOFTWARE.
       count('albums');
       toast(`Added to "${name}"`);
 
-      if (ALBUM_THEN_NEXT) {
-        await sleep(300);
-        return next();
+      if (!inViewer() || ALBUM_THEN === 'stay') return;
+      await sleep(300);
+      return ALBUM_THEN === 'archive' ? archive() : next();
+    }
+
+    // --- Selecting the same photos again in the grid --------------------------
+    // Google Photos clears the selection after an action such as adding to an
+    // album. The script keeps the IDs of the photos that were selected, and R
+    // ticks their boxes again.
+    // current: the photos ticked now. last: the last selection that was not
+    // empty. partial: R found only some of the photos, so last is kept whole.
+    const sel = { current: new Set(), last: [], partial: false };
+
+    // The box of a photo sits next to the link to the photo, which holds its ID.
+    // The box of a whole day has no link that close.
+    function photoIdOf(box) {
+      for (let p = box, i = 0; p && i < 2; p = p.parentElement, i++) {
+        const a = p.querySelector('a[href*="/photo/"]');
+        if (a) return (/\/photo\/([^/?#]+)/.exec(a.getAttribute('href')) || [])[1] || null;
       }
+      return null;
+    }
+
+    const photoBoxes = () => [...document.querySelectorAll('[role="checkbox"]')]
+      .map((box) => ({ box, id: photoIdOf(box) })).filter((b) => b.id);
+
+    // With the selected photos scrolled away, no box on the page is ticked, but
+    // the "Clear selection" button is still at the top.
+    const clearSelectionShown = () => [...document.querySelectorAll('button[aria-label], [role="button"][aria-label]')]
+      .some((b) => RX.clearSelection.test(ariaOf(b)) && isVisible(b));
+
+    // Runs every 400 ms. The grid only keeps the photos near the screen in the
+    // page, so a photo scrolled out of view stays in the set until its box is
+    // seen unticked. When the selection is cleared, the boxes are unticked
+    // before the bar at the top goes: last is only replaced by a selection
+    // that is not empty, so it survives that.
+    function trackSelection() {
+      if (inViewer()) return;
+      const active = document.querySelector('[role="checkbox"][aria-checked="true"]') || clearSelectionShown();
+      if (!active) {
+        sel.current = new Set();
+        sel.partial = false;
+        return;
+      }
+      for (const { box, id } of photoBoxes()) {
+        if (box.getAttribute('aria-checked') === 'true') sel.current.add(id);
+        else sel.current.delete(id);
+      }
+      if (sel.current.size && !sel.partial) sel.last = [...sel.current];
+    }
+
+    // The number in "12 selected" at the top, or else the boxes seen ticked.
+    function selectionSize() {
+      for (const n of document.querySelectorAll('div, span')) {
+        if (n.children.length) continue;
+        const m = RX.selectedCount.exec(textOf(n));
+        if (m && isVisible(n)) {
+          const k = parseInt(m[1].replace(/\D/g, ''), 10);
+          if (k > 0) return k;
+        }
+      }
+      return sel.current.size || 1;
+    }
+
+    async function reselect() {
+      if (inViewer()) return toast('R works in the grid: close the photo first', true);
+      trackSelection();
+      const ids = sel.last;
+      // After an R that found only some of the photos, those stay ticked and R
+      // goes on with the rest. Otherwise ticked photos are a selection in use.
+      if (sel.current.size && !sel.partial) return toast('Photos are already selected', true);
+      if (!ids.length) return toast('No earlier selection', true);
+      const boxes = new Map(photoBoxes().map((b) => [b.id, b.box]));
+      let found = 0;
+      sel.partial = true;               // the ticks below must not shrink last
+      for (const id of ids) {
+        const box = boxes.get(id);
+        if (!box) continue;
+        found++;
+        if (box.getAttribute('aria-checked') !== 'true') {
+          realClick(box);
+          await sleep(80);
+        }
+      }
+      sel.partial = found > 0 && found < ids.length;
+      if (!found) return toast('The photos are not on the page: scroll to them and press R again', true);
+      if (sel.partial) return toast(`${found} of ${ids.length} photos selected again: scroll to the others and press R again`, true);
+      toast(`${found} photos selected again`);
     }
 
     function undo() {
@@ -535,7 +627,7 @@ SOFTWARE.
       if (!btn) return toast('Nothing to undo', true);
       realClick(btn);
       const last = history.pop();
-      if (last) bump(last, -1);
+      if (last) bump(last[0], -last[1]);
       toast('Undone ↶');
     }
 
@@ -815,6 +907,7 @@ SOFTWARE.
       helpRow('undo', 'undo'),
       helpRow('dupMode', 'compare similar photos'),
       helpRow('setLeft', 'set photos left'),
+      helpRow('reselect', 'grid: select the last photos again'),
       helpRow('toggleHud', 'panel: full, counts only, hidden'),
       el('div', {}, [el('kbd', { textContent: toggleLabel }), ' all keys on/off']),
       el('div', {}, [el('kbd', { textContent: '1–9' }), ' album  ', el('kbd', { textContent: 'Shift+1–9' }), ' assign']),
@@ -924,7 +1017,8 @@ SOFTWARE.
     // ---------------------------------------------------------------------------
     // Keyboard
     // ---------------------------------------------------------------------------
-    const ACTIONS = { archive, trash, favorite, undo, next, toggleHud, dupMode: toggleDup, setLeft };
+    const ACTIONS = { archive, trash, favorite, undo, next, toggleHud, dupMode: toggleDup, setLeft, reselect };
+    setInterval(trackSelection, 400);
     const keyMap = new Map();
     for (const [action, keys] of Object.entries(KEYS)) {
       for (const key of keys) keyMap.set(key, ACTIONS[action]);
