@@ -203,17 +203,25 @@ With no photos selected, a number key in the grid only shows a red message.
 `R` ticks again the photos that were selected last, for example after you added them to an
 album with **Create or add to album**. Then `A` archives them.
 
-The script checks the boxes in the grid every 400 ms. It keeps the ID of each selected photo
-and how far down the grid it is. It keeps them until you select other photos, and it
+The script checks the boxes in the grid every 400 ms. It keeps the ID of each selected photo,
+and how far down the grid each photo on screen is, selected or not. It keeps them until you
+select other photos, and it
 forgets them when the page is reloaded. A photo you untick stays in the list for 1.5
 seconds, since Google Photos unticks the boxes on screen a moment before it clears a
 selection.
 
 Google Photos keeps only the photos near the screen in the page. For the photos that are
 not there, `R` scrolls the grid to where each one was seen, ticks it, and then scrolls back.
-It waits up to 3 seconds for each photo to appear, then looks up to 2 screens above and
-below. If a photo is still not found, a red message says how many are missing. Scroll to
-them and press `R` again.
+
+The grid can change height above a photo after you scroll past it, so a photo is not always
+where it was seen. When `R` arrives and the photo is not there, it compares where the photos
+on screen are now with where they were seen, and moves by the difference, up to 5 times.
+Then it looks up to 4 screens above and below. It waits up to 3 seconds for the grid to
+draw the photos at each place. If Google Photos puts the grid back where it was, `R` scrolls
+again, up to 3 times.
+
+If a photo is still not found, a red message says how many are missing. Scroll to them and
+press `R` again.
 
 While photos are selected, and in the photo viewer, `R` only shows a red message. The
 exception is a selection left by an `R` that found only some of the photos.
@@ -361,12 +369,13 @@ the script need the new text. Open an issue with the `gpqkDump()` output.
 
 - The buttons are recognised in Italian and English Google Photos only. With Google
   Photos in another language, the keys find no buttons.
-- Written and tried in the photo viewer. In the grid, `R` has been tried with photos 3,700
-  pixels apart, and a number key has been tried as far as the album list. Adding a
-  selection to an album and archiving it have not been tried on real photos.
-- `R` finds a photo by where it was in the grid. If the grid above it changes, for example
-  after photos above it were archived, the photo may be more than 2 screens away and `R`
-  misses it.
+- Written and tried in the photo viewer. In the grid, `R` has been tried with 5 photos
+  spread over about 80,000 pixels (120 screens), and with the saved places moved by 3,000
+  pixels. A number key has been tried as far as the album list. Adding a selection to an
+  album and archiving it have not been tried on real photos.
+- `R` finds a photo by where it was in the grid. If you scroll past a part of the grid too
+  fast for the check every 400 ms to see it, there are fewer photos there to compare, and a
+  photo that has moved far may not be found.
 - **`Z` presses the Undo button that is on screen.** Google Photos shows its notifications
   one after the other, a few seconds each. If you sort quickly, the notification on screen
   can belong to an action a few photos back, and `Z` undoes that one. Press `Z` straight

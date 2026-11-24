@@ -6,7 +6,7 @@
 // @downloadURL  https://raw.githubusercontent.com/gmadevs/GPTools/main/google-photos-quickkeys.user.js
 // @updateURL    https://raw.githubusercontent.com/gmadevs/GPTools/main/google-photos-quickkeys.user.js
 // @license      MIT
-// @version      0.11.0
+// @version      0.12.0
 // @description  Single keys for sorting photos on Google Photos: archive, delete with the dialog confirmed, favourite and archive, albums on keys 1-9, side-by-side comparison of similar photos, saved counts and photos left.
 // @match        https://photos.google.com/*
 // @run-at       document-start
@@ -586,7 +586,8 @@ SOFTWARE.
     // where each one is in the grid, and R ticks their boxes again.
     // current: the photos ticked now. unticked: photo ID → when its box was
     // seen unticked, kept for UNTICK_GRACE ms. last: the last selection that was
-    // not empty. pos: photo ID → its height in the scrolling grid. partial: R
+    // not empty. pos: photo ID → its height in the scrolling grid, for every
+    // photo seen while photos are selected, ticked or not. partial: R
     // found only some of the photos, so last is kept whole. ticking: the script
     // is ticking boxes, and the check every 400 ms waits.
     const sel = {
@@ -654,10 +655,10 @@ SOFTWARE.
       const sc = gridScroller();
       const now = Date.now();
       for (const { box, id } of photoBoxes()) {
+        sel.pos.set(id, offsetIn(sc, box));
         if (box.getAttribute('aria-checked') === 'true') {
           sel.current.add(id);
           sel.unticked.delete(id);
-          sel.pos.set(id, offsetIn(sc, box));
         } else if (sel.current.delete(id)) {
           sel.unticked.set(id, now);
         }
@@ -679,21 +680,62 @@ SOFTWARE.
       return sel.current.size || 1;
     }
 
-    // Scrolls the grid to y and waits for test() to be true. The grid can take
-    // a moment to draw the photos: if they are not there after 3 s, it nudges
-    // the scroll by 1 px, then looks up to 2 screens above and below.
-    async function scrollUntil(sc, y, test) {
-      sc.scrollTop = y;
-      if (await waitFor(test, 3000)) return true;
-      sc.scrollTop = y + 1;
-      await sleep(100);
-      sc.scrollTop = y;
-      if (await waitFor(test, 2000)) return true;
-      for (const k of [-1, 1, -2, 2]) {
-        sc.scrollTop = Math.max(0, y + k * sc.clientHeight * 0.8);
-        if (await waitFor(test, 1500)) return true;
+    // Scrolls the grid to y. While it is still loading after a long scroll,
+    // Google Photos can put the grid back where it was: then set it again, up
+    // to 3 times.
+    async function scrollGridTo(sc, y) {
+      y = Math.max(0, Math.round(y));
+      for (let i = 0; i < 3; i++) {
+        sc.scrollTop = y;
+        await sleep(150);
+        if (Math.abs(sc.scrollTop - y) < 50) return;
       }
-      return false;
+    }
+
+    const onScreen = (el) => {
+      const r = el.getBoundingClientRect();
+      return r.height > 0 && r.bottom > 0 && r.top < innerHeight;
+    };
+
+    // Waits up to 3 s for the grid to draw photos on screen at the new place.
+    async function gridDrawn() {
+      await waitFor(() => photoBoxes().some((b) => onScreen(b.box)), 3000);
+      await sleep(200);
+    }
+
+    // How far the photos on screen have moved since they were seen: the median
+    // of (height now − height seen). The grid above them can change height, for
+    // example when a part of it is loaded again.
+    function driftHere(sc) {
+      const d = photoBoxes().filter((b) => onScreen(b.box) && sel.pos.has(b.id))
+        .map((b) => offsetIn(sc, b.box) - sel.pos.get(b.id)).sort((a, b) => a - b);
+      return d.length ? d[Math.floor(d.length / 2)] : null;
+    }
+
+    // Brings the photo with this ID into the page. It goes to where the photo
+    // was seen, moved by the drift of the last photo found. If the photo is
+    // not there, the drift of the photos on screen gives a better place, up to
+    // 5 times. Then it looks up to 4 screens above and below. Returns the
+    // drift of the photo, or null if it was not found.
+    async function bringIntoPage(sc, id, drift) {
+      const box = () => (photoBoxes().find((b) => b.id === id) || {}).box;
+      const seen = sel.pos.get(id);
+      const third = sc.clientHeight / 3;
+      let y = seen + drift;
+      for (let i = 0; i < 5; i++) {
+        await scrollGridTo(sc, y - third);
+        await gridDrawn();
+        if (box()) return offsetIn(sc, box()) - seen;
+        const d = driftHere(sc);
+        if (d === null || Math.abs(seen + d - y) < third) break;
+        y = seen + d;
+      }
+      for (const k of [1, -1, 2, -2, 3, -3, 4, -4]) {
+        await scrollGridTo(sc, y - third + k * sc.clientHeight * 0.8);
+        await gridDrawn();
+        if (box()) return offsetIn(sc, box()) - seen;
+      }
+      return null;
     }
 
     // Ticks the photos with these IDs. The ones not on the page are found by
@@ -733,18 +775,19 @@ SOFTWARE.
       await tickShown();
       const sc = gridScroller();
       const start = sc.scrollTop;
+      let drift = 0;
       for (;;) {
         const id = ids.filter((x) => !found.has(x) && !tried.has(x) && sel.pos.has(x))
           .sort((a, b) => sel.pos.get(a) - sel.pos.get(b))[0];
         if (!id) break;
         tried.add(id);
         toast(`Selecting the photos again: ${found.size} of ${ids.length}`);
-        await scrollUntil(sc, Math.max(0, sel.pos.get(id) - sc.clientHeight / 3),
-          () => photoBoxes().some((b) => b.id === id));
+        const d = await bringIntoPage(sc, id, drift);
+        if (d !== null) drift = d;
         await tickShown();
       }
-      if (sc.scrollTop !== start) {
-        sc.scrollTop = start;
+      if (Math.abs(sc.scrollTop - start) > 1) {
+        await scrollGridTo(sc, start);
         await sleep(300);
       }
       return found;
