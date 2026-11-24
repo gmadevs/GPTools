@@ -49,6 +49,7 @@ total, and how many photos are left.
 - [Albums on the number keys](#albums-on-the-number-keys)
   - [Albums in the grid](#albums-in-the-grid)
 - [Selecting the same photos again](#selecting-the-same-photos-again)
+  - [Shift+click and the box of a day](#shiftclick-and-the-box-of-a-day)
 - [Comparing similar photos](#comparing-similar-photos)
 - [The panel and the statistics](#the-panel-and-the-statistics)
 - [Photos left to sort](#photos-left-to-sort)
@@ -187,14 +188,23 @@ with `Shift` and a number replaces the one set in the script for the same key.
 
 ### Albums in the grid
 
-1. In the grid, select the photos. You can scroll while you select.
+1. In the grid, select the photos. You can scroll while you select, and use `Shift`+click.
 2. Press the number of the album.
 
-The script presses **Create or add to album**, chooses **Album** and picks the album in
-the same list as in the viewer. Google Photos then clears the selection. With
-`ALBUM_THEN = 'archive'`, the script waits up to 3 seconds for the selection to clear,
-ticks the same photos again as `R` does, and archives them. If it does not find all of
-them, it archives none and a red message says how many it found.
+First the script compares the photos it knows with the number in "12 selected" at the top.
+If it knows fewer, for example after a `Shift`+click over photos it never saw, it scrolls
+through the part of the grid with the selected photos, from 1 screen above the first to 1
+screen below the last, and notes every ticked box. If photos are still missing, it goes on
+up to 10 screens below and 10 above. Then it scrolls back.
+
+Then it presses **Create or add to album**, chooses **Album** and picks the album in the
+same list as in the viewer. Google Photos adds all the selected photos and clears the
+selection. With `ALBUM_THEN = 'archive'`, the script waits up to 3 seconds for the
+selection to clear, ticks the same photos again as `R` does, and archives them. It archives
+nothing, and a red message gives the numbers, in two cases:
+
+- it knows fewer photos than Google Photos counted;
+- after ticking, Google Photos counts fewer photos than before.
 
 With no photos selected, a number key in the grid only shows a red message.
 
@@ -204,11 +214,23 @@ With no photos selected, a number key in the grid only shows a red message.
 album with **Create or add to album**. Then `A` archives them.
 
 The script checks the boxes in the grid every 400 ms. It keeps the ID of each selected photo,
-and how far down the grid each photo on screen is, selected or not. It keeps them until you
-select other photos, and it
-forgets them when the page is reloaded. A photo you untick stays in the list for 1.5
-seconds, since Google Photos unticks the boxes on screen a moment before it clears a
-selection.
+and, for each photo on screen, selected or not, how far down the grid it is and the date and
+time in its label. It keeps them until you select other photos, and it forgets them when
+the page is reloaded. A photo you untick stays in the list for 1.5 seconds, since Google
+Photos unticks the boxes on screen a moment before it clears a selection.
+
+### Shift+click and the box of a day
+
+`Shift`+click ticks every photo between the last photo you clicked and this one, also the
+ones far from the screen. Google Photos ticks those without drawing them, so the script
+does not see their boxes ticked. The grid is in date order, newest first. 500 ms after a
+`Shift`+click, the script takes every photo it has seen with a date and time between the
+two clicked photos, and adds it to the selection, or removes it if the click unticked.
+The box next to a date does the same for the photos of that day.
+
+This works for the photos that passed on screen while photos were selected. A photo you
+scrolled past too fast, or that was never on screen, is not known. The script reads the
+date in British and American English and in Italian.
 
 Google Photos keeps only the photos near the screen in the page. For the photos that are
 not there, `R` scrolls the grid to where each one was seen, ticks it, and then scrolls back.
@@ -220,8 +242,10 @@ Then it looks up to 4 screens above and below. It waits up to 3 seconds for the 
 draw the photos at each place. If Google Photos puts the grid back where it was, `R` scrolls
 again, up to 3 times.
 
-If a photo is still not found, a red message says how many are missing. Scroll to them and
-press `R` again.
+At the end, `R` waits up to 3 seconds for the number at the top to catch up, and compares
+it with the number Google Photos showed before. If it is lower, a red message gives both
+numbers. Either some photos were not found (scroll to them and press `R` again), or they
+were selected while off screen and the script never saw them (select them by hand).
 
 While photos are selected, and in the photo viewer, `R` only shows a red message. The
 exception is a selection left by an `R` that found only some of the photos.
@@ -376,6 +400,11 @@ the script need the new text. Open an issue with the `gpqkDump()` output.
 - `R` finds a photo by where it was in the grid. If you scroll past a part of the grid too
   fast for the check every 400 ms to see it, there are fewer photos there to compare, and a
   photo that has moved far may not be found.
+- A `Shift`+click range is worked out from dates and times, assuming it starts at the photo
+  clicked last. This could not be tried here: `Shift`+click from a script does not select a
+  range in Google Photos. If the range Google Photos ticks is different, the numbers at
+  the end of `R` show it. With the number keys, the search before the album finds the
+  missing photos.
 - **`Z` presses the Undo button that is on screen.** Google Photos shows its notifications
   one after the other, a few seconds each. If you sort quickly, the notification on screen
   can belong to an action a few photos back, and `Z` undoes that one. Press `Z` straight

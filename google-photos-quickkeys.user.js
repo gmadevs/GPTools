@@ -6,7 +6,7 @@
 // @downloadURL  https://raw.githubusercontent.com/gmadevs/GPTools/main/google-photos-quickkeys.user.js
 // @updateURL    https://raw.githubusercontent.com/gmadevs/GPTools/main/google-photos-quickkeys.user.js
 // @license      MIT
-// @version      0.12.0
+// @version      0.13.0
 // @description  Single keys for sorting photos on Google Photos: archive, delete with the dialog confirmed, favourite and archive, albums on keys 1-9, side-by-side comparison of similar photos, saved counts and photos left.
 // @match        https://photos.google.com/*
 // @run-at       document-start
@@ -495,8 +495,9 @@ SOFTWARE.
         if (!selectionActive()) {
           return toast('Select the photos first: in the grid the number keys work on a selection', true);
         }
-        ids = [...sel.last];
         n = selectionSize();
+        if (sel.last.length < n) await collectSelection(n);
+        ids = [...sel.last];
       }
 
       const dialogsBefore = new Set(visibleDialogs());
@@ -560,20 +561,26 @@ SOFTWARE.
       toast(n > 1 ? `${n} photos added to "${name}"` : `Added to "${name}"`);
 
       if (ALBUM_THEN === 'stay') return;
-      if (grid) return ALBUM_THEN === 'archive' ? archiveAgain(ids) : undefined;
+      if (grid) return ALBUM_THEN === 'archive' ? archiveAgain(ids, n) : undefined;
       await sleep(300);
       return ALBUM_THEN === 'archive' ? archive() : next();
     }
 
     // After the album, Google Photos clears the selection: tick the same photos
-    // again and archive them. If some are not found, nothing is archived.
-    async function archiveAgain(ids) {
+    // again and archive them. n is the count Google Photos showed. If the
+    // script does not know all n photos, or does not find them all again,
+    // nothing is archived.
+    async function archiveAgain(ids, n) {
+      if (ids.length < n) {
+        return toast(`The script knows only ${ids.length} of the ${n} photos, nothing archived: archive them by hand`, true);
+      }
       const cleared = await waitFor(() => !selectionActive(), 3000);
       if (cleared) {
         await sleep(300);
-        const found = await tickPhotos(ids);
-        if (found < ids.length) {
-          return toast(`Only ${found} of ${ids.length} photos found again, nothing archived: press R, then A`, true);
+        await tickPhotos(ids, n);
+        const now = googleCount();
+        if (now < n) {
+          return toast(`Only ${now} of ${n} photos selected again, nothing archived: press R, then A`, true);
         }
         await sleep(500);
       }
@@ -587,17 +594,44 @@ SOFTWARE.
     // current: the photos ticked now. unticked: photo ID → when its box was
     // seen unticked, kept for UNTICK_GRACE ms. last: the last selection that was
     // not empty. pos: photo ID → its height in the scrolling grid, for every
-    // photo seen while photos are selected, ticked or not. partial: R
-    // found only some of the photos, so last is kept whole. ticking: the script
-    // is ticking boxes, and the check every 400 ms waits.
+    // photo seen while photos are selected, ticked or not. when: photo ID → the
+    // date and time in its label, for the same photos. count: the number
+    // Google Photos showed for last. anchor: the photo of the last click, where
+    // a Shift+click range starts. partial: R found only some of the photos, so
+    // last and count are kept. ticking: the script is ticking boxes, and the
+    // check every 400 ms waits.
     const sel = {
-      current: new Set(), unticked: new Map(), last: [], pos: new Map(),
-      partial: false, ticking: false, idle: 0, scroller: null,
+      current: new Set(), unticked: new Map(), last: [], pos: new Map(), when: new Map(),
+      count: 0, anchor: null, partial: false, ticking: false, idle: 0, scroller: null,
+      countEl: null, countScan: 0,
     };
     // When Google Photos clears a selection, it unticks the boxes on screen a
     // moment before the selection ends. A photo unticked while the selection
     // goes on for this long was unticked by hand, and leaves last.
     const UNTICK_GRACE = 1500;
+
+    // The label of a photo box ends with when it was taken: "16 Aug 2026,
+    // 18:39:01" in British English, "16 ago 2026, 18:39:01" in Italian, "Aug 16,
+    // 2026, 6:39:01 PM" in American English. The grid is in that order, newest
+    // first, so a Shift+click range is every photo between the two times.
+    // Returns a number to compare, or null.
+    const MONTHS = {
+      jan: 0, gen: 0, feb: 1, mar: 2, apr: 3, may: 4, mag: 4, jun: 5, giu: 5, jul: 6, lug: 6,
+      aug: 7, ago: 7, sep: 8, set: 8, oct: 9, ott: 9, nov: 10, dec: 11, dic: 11,
+    };
+    function whenOf(label) {
+      const t = /(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?\s*([ap])?\.?\s?m?\.?/i.exec(label.slice(-14));
+      let d = /(\d{1,2})\s+([a-zà-ÿ]{3,})\.?\s+(\d{4})/i.exec(label);
+      let day, mon, year;
+      if (d) [, day, mon, year] = d;
+      else if ((d = /([a-zà-ÿ]{3,})\.?\s+(\d{1,2}),?\s+(\d{4})/i.exec(label))) [, mon, day, year] = d;
+      const m = d && MONTHS[mon.slice(0, 3).toLowerCase()];
+      if (m === undefined || m === null || !t) return null;
+      let h = +t[1] % 24;
+      if (t[4] && /p/i.test(t[4]) && h < 12) h += 12;
+      if (t[4] && /a/i.test(t[4]) && h === 12) h = 0;
+      return Date.UTC(+year, m, +day, h, +t[2], +(t[3] || 0));
+    }
 
     // The box of a photo sits next to the link to the photo, which holds its ID.
     // The box of a whole day has no link that close.
@@ -651,11 +685,15 @@ SOFTWARE.
         return;
       }
       sel.idle = 0;
-      if (!sel.current.size && !sel.unticked.size && !sel.partial) sel.pos = new Map();   // a new selection
+      if (!sel.current.size && !sel.unticked.size && !sel.partial) {   // a new selection
+        sel.pos = new Map();
+        sel.when = new Map();
+      }
       const sc = gridScroller();
       const now = Date.now();
       for (const { box, id } of photoBoxes()) {
         sel.pos.set(id, offsetIn(sc, box));
+        if (!sel.when.has(id)) sel.when.set(id, whenOf(box.getAttribute('aria-label') || ''));
         if (box.getAttribute('aria-checked') === 'true') {
           sel.current.add(id);
           sel.unticked.delete(id);
@@ -664,21 +702,99 @@ SOFTWARE.
         }
       }
       for (const [id, t] of sel.unticked) if (now - t > UNTICK_GRACE) sel.unticked.delete(id);
-      if (!sel.partial && (sel.current.size || sel.unticked.size)) sel.last = [...sel.current, ...sel.unticked.keys()];
+      if (!sel.partial && (sel.current.size || sel.unticked.size)) {
+        sel.last = [...sel.current, ...sel.unticked.keys()];
+        const k = googleCount();
+        if (k) sel.count = k;
+      }
     }
 
-    // The number in "12 selected" at the top, or else the boxes seen ticked.
-    function selectionSize() {
-      for (const n of document.querySelectorAll('div, span')) {
-        if (n.children.length) continue;
-        const m = RX.selectedCount.exec(textOf(n));
-        if (m && isVisible(n)) {
-          const k = parseInt(m[1].replace(/\D/g, ''), 10);
-          if (k > 0) return k;
+    // Clicks on the boxes, as you make them. A Shift+click ticks or unticks a
+    // range of photos, also ones far from the screen that the grid does not
+    // keep in the page. The script adds or removes the photos it has seen
+    // whose time is in the range. The box of a day does the same for the
+    // photos of that day. Google Photos shows the result after a moment, so
+    // the script looks 500 ms later.
+    document.addEventListener('click', (e) => {
+      if (!e.isTrusted || inViewer()) return;
+      const box = e.target.closest && e.target.closest('[role="checkbox"]');
+      if (!box) return;
+      const id = photoIdOf(box);
+      const shift = e.shiftKey;
+      setTimeout(() => {
+        if (sel.ticking) return;
+        trackSelection();
+        if (id) onPhotoClick(id, shift);
+        else onDayClick(box);
+      }, 500);
+    }, true);
+
+    function setRange(from, to, on) {
+      const lo = Math.min(from, to), hi = Math.max(from, to);
+      for (const [id, w] of sel.when) {
+        if (w === null || w < lo || w > hi) continue;
+        if (on) {
+          sel.current.add(id);
+          sel.unticked.delete(id);
+        } else {
+          sel.current.delete(id);
         }
       }
-      return sel.current.size || 1;
     }
+
+    function afterClick() {
+      if (sel.partial) return;
+      sel.last = [...sel.current, ...sel.unticked.keys()];
+      const k = googleCount();
+      if (k) sel.count = k;
+    }
+
+    function onPhotoClick(id, shift) {
+      const w = sel.when.get(id);
+      const b = photoBoxes().find((x) => x.id === id);
+      const on = b ? b.box.getAttribute('aria-checked') === 'true' : sel.current.has(id);
+      if (shift && sel.anchor && sel.anchor.when !== null && w !== null && w !== undefined) {
+        setRange(sel.anchor.when, w, on);
+        afterClick();
+      }
+      sel.anchor = { id, when: w === undefined ? null : w };
+    }
+
+    // The photos of a day follow the box of the day in the page.
+    function onDayClick(dayBox) {
+      const boxes = [...document.querySelectorAll('[role="checkbox"]')];
+      const first = boxes.slice(boxes.indexOf(dayBox) + 1).find((b) => photoIdOf(b));
+      const w = first && whenOf(first.getAttribute('aria-label') || '');
+      if (w === null || w === undefined) return;
+      const dayStart = w - (w % 86400000);
+      setRange(dayStart, dayStart + 86399999, dayBox.getAttribute('aria-checked') === 'true');
+      afterClick();
+    }
+
+    // The number in "12 selected" at the top, or 0. The element is kept, and
+    // the page is searched for it again at most every 2 s.
+    function googleCount() {
+      const read = (n) => {
+        const m = n && n.isConnected && RX.selectedCount.exec(textOf(n));
+        return m && isVisible(n) ? parseInt(m[1].replace(/\D/g, ''), 10) : null;
+      };
+      const k = read(sel.countEl);
+      if (k !== null) return k;
+      if (Date.now() - sel.countScan < 2000) return 0;
+      sel.countScan = Date.now();
+      for (const n of document.querySelectorAll('div, span')) {
+        if (n.children.length) continue;
+        const v = read(n);
+        if (v !== null) {
+          sel.countEl = n;
+          return v;
+        }
+      }
+      return 0;
+    }
+
+    // The number of selected photos, or else the boxes seen ticked.
+    const selectionSize = () => googleCount() || sel.current.size || 1;
 
     // Scrolls the grid to y. While it is still loading after a long scroll,
     // Google Photos can put the grid back where it was: then set it again, up
@@ -738,6 +854,32 @@ SOFTWARE.
       return null;
     }
 
+    // Before a number key, with fewer photos known than Google Photos counts:
+    // scroll through the part of the grid with the selected photos, from 1
+    // screen above the first to 1 screen below the last, and note every ticked
+    // box. If some are still missing, go on up to 10 screens below and above.
+    // Then go back.
+    async function collectSelection(n) {
+      const sc = gridScroller();
+      const start = sc.scrollTop;
+      const ys = sel.last.map((id) => sel.pos.get(id)).filter((y) => y !== undefined);
+      if (!ys.length) return;
+      const step = sc.clientHeight * 0.8;
+      const top = Math.min(...ys) - sc.clientHeight, bottom = Math.max(...ys) + sc.clientHeight;
+      const visit = async (y) => {
+        await scrollGridTo(sc, y);
+        await gridDrawn();
+        sel.idle = 0;
+        trackSelection();
+        toast(`Looking for the selected photos: ${sel.last.length} of ${n}`);
+      };
+      for (let y = top; y <= bottom && sel.last.length < n; y += step) await visit(y);
+      for (let i = 1; i <= 10 && sel.last.length < n; i++) await visit(bottom + i * step);
+      for (let i = 1; i <= 10 && sel.last.length < n && top - i * step > -step; i++) await visit(top - i * step);
+      await scrollGridTo(sc, start);
+      await sleep(300);
+    }
+
     // Ticks the photos with these IDs. The ones not on the page are found by
     // scrolling to where they were seen. Then the grid goes back to where it
     // was. Returns how many were found.
@@ -745,14 +887,20 @@ SOFTWARE.
     // Google Photos shows a tick a moment after the click. Until then the
     // selection looks empty, so the check every 400 ms waits until the ticks
     // or the "Clear selection" button are there, for up to 2 s.
-    async function tickPhotos(ids) {
+    // expected: the count Google Photos showed for these photos. If it now
+    // shows fewer, the selection counts as partial, and last and count stay.
+    // The count at the top catches up with the ticks after a moment: wait up
+    // to 3 s for it to reach the number of photos ticked.
+    async function tickPhotos(ids, expected) {
       sel.ticking = true;
       try {
         const found = await tickAll(ids);
         await waitFor(selectionActive, 2000);
+        await waitFor(() => googleCount() >= found.size, 3000);
+        await sleep(300);
         sel.current = found;
         sel.unticked = new Map();
-        sel.partial = found.size > 0 && found.size < ids.length;
+        sel.partial = found.size > 0 && (found.size < ids.length || googleCount() < expected);
         return found.size;
       } finally {
         sel.ticking = false;
@@ -801,10 +949,17 @@ SOFTWARE.
       // goes on with the rest. Otherwise ticked photos are a selection in use.
       if (selectionActive() && !sel.partial) return toast('Photos are already selected', true);
       if (!ids.length) return toast('No earlier selection', true);
-      const found = await tickPhotos(ids);
+      const expected = Math.max(sel.count, ids.length);
+      const found = await tickPhotos(ids, expected);
       if (!found) return toast('The photos were not found: scroll to them and press R again', true);
-      if (sel.partial) return toast(`${found} of ${ids.length} photos selected again: scroll to the others and press R again`, true);
-      toast(`${found} photos selected again`);
+      // Google Photos' own count says how many are selected now.
+      const now = googleCount() || found;
+      if (now < expected) {
+        const why = found < ids.length ? 'scroll to the others and press R again'
+          : 'the others were selected while off screen, and the script never saw them';
+        return toast(`${now} of ${expected} photos selected again: ${why}`, true);
+      }
+      toast(`${now} photos selected again`);
     }
 
     function undo() {
