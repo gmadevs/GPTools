@@ -6,7 +6,7 @@
 // @downloadURL  https://raw.githubusercontent.com/gmadevs/GPTools/main/google-photos-quickkeys.user.js
 // @updateURL    https://raw.githubusercontent.com/gmadevs/GPTools/main/google-photos-quickkeys.user.js
 // @license      MIT
-// @version      0.13.0
+// @version      0.13.1
 // @description  Single keys for sorting photos on Google Photos: archive, delete with the dialog confirmed, favourite and archive, albums on keys 1-9, side-by-side comparison of similar photos, saved counts and photos left.
 // @match        https://photos.google.com/*
 // @run-at       document-start
@@ -666,17 +666,31 @@ SOFTWARE.
 
     // With the selected photos scrolled away, no box on the page is ticked, but
     // the "Clear selection" button is still at the top.
+    // After a selection is cleared, the "Clear selection" button stays in the
+    // page with opacity 0: it counts only when it and its parents can be seen.
+    const opaque = (el) => {
+      for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+        if (getComputedStyle(n).opacity === '0') return false;
+      }
+      return true;
+    };
     const clearSelectionShown = () => [...document.querySelectorAll('button[aria-label], [role="button"][aria-label]')]
-      .some((b) => RX.clearSelection.test(ariaOf(b)) && isVisible(b));
-    const selectionActive = () =>
-      !!document.querySelector('[role="checkbox"][aria-checked="true"]') || clearSelectionShown();
+      .some((b) => RX.clearSelection.test(ariaOf(b)) && isVisible(b) && opaque(b));
+
+    // A ticked box of a photo in the grid that is drawn. Other checkboxes on the
+    // page, and grids hidden with display: none, do not count.
+    const tickedPhotoShown = () => [...document.querySelectorAll('[role="checkbox"][aria-checked="true"]')]
+      .some((b) => b.getClientRects().length > 0 && photoIdOf(b));
+
+    const selectionActive = () => tickedPhotoShown() || clearSelectionShown();
 
     // Runs every 400 ms. The grid only keeps the photos near the screen in the
     // page, so a photo scrolled out of view stays in the set until its box is
     // seen unticked. The selection counts as ended after 2 checks in a row
-    // find none, since the page can show no selection for a moment.
+    // find none, since the page can show no selection for a moment. While a
+    // dialog is open, such as the album list, the check waits.
     function trackSelection() {
-      if (inViewer() || sel.ticking) return;
+      if (inViewer() || sel.ticking || visibleDialogs().length) return;
       if (!selectionActive()) {
         if (++sel.idle < 2) return;
         sel.current = new Set();
@@ -773,14 +787,14 @@ SOFTWARE.
 
     // The number in "12 selected" at the top, or 0. The element is kept, and
     // the page is searched for it again at most every 2 s.
-    function googleCount() {
+    function googleCount(fresh = false) {
       const read = (n) => {
         const m = n && n.isConnected && RX.selectedCount.exec(textOf(n));
-        return m && isVisible(n) ? parseInt(m[1].replace(/\D/g, ''), 10) : null;
+        return m && isVisible(n) && opaque(n) ? parseInt(m[1].replace(/\D/g, ''), 10) : null;
       };
       const k = read(sel.countEl);
       if (k !== null) return k;
-      if (Date.now() - sel.countScan < 2000) return 0;
+      if (!fresh && Date.now() - sel.countScan < 2000) return 0;
       sel.countScan = Date.now();
       for (const n of document.querySelectorAll('div, span')) {
         if (n.children.length) continue;
@@ -947,7 +961,11 @@ SOFTWARE.
       const ids = sel.last;
       // After an R that found only some of the photos, those stay ticked and R
       // goes on with the rest. Otherwise ticked photos are a selection in use.
-      if (selectionActive() && !sel.partial) return toast('Photos are already selected', true);
+      // Only the count Google Photos shows at the top stops R: "12 selected".
+      const shown = googleCount(true);
+      if (shown > 0 && !sel.partial) {
+        return toast(`${shown} photos are already selected: clear the selection first (Esc)`, true);
+      }
       if (!ids.length) return toast('No earlier selection', true);
       const expected = Math.max(sel.count, ids.length);
       const found = await tickPhotos(ids, expected);

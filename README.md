@@ -247,8 +247,16 @@ it with the number Google Photos showed before. If it is lower, a red message gi
 numbers. Either some photos were not found (scroll to them and press `R` again), or they
 were selected while off screen and the script never saw them (select them by hand).
 
-While photos are selected, and in the photo viewer, `R` only shows a red message. The
-exception is a selection left by an `R` that found only some of the photos.
+`R` does not work while Google Photos shows "12 selected" at the top, or in the photo
+viewer: it only shows a red message, with the number of photos selected. Clear the
+selection with `Esc` first. The exception is a selection left by an `R` that found only
+some of the photos.
+
+The script counts a selection from the ticked boxes of photos in the grid and from the
+**Clear selection** button. Other checkboxes on the page do not count. After a selection is
+cleared, Google Photos leaves the button in the page with opacity 0, and then it does not
+count either. While a dialog is open, such as the list of albums, the check every 400 ms
+waits.
 
 `A` on a selection counts every selected photo in the panel, using the number in
 "12 selected" at the top of the page.
