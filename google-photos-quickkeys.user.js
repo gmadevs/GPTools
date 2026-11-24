@@ -6,7 +6,7 @@
 // @downloadURL  https://raw.githubusercontent.com/gmadevs/GPTools/main/google-photos-quickkeys.user.js
 // @updateURL    https://raw.githubusercontent.com/gmadevs/GPTools/main/google-photos-quickkeys.user.js
 // @license      MIT
-// @version      0.10.0
+// @version      0.11.0
 // @description  Single keys for sorting photos on Google Photos: archive, delete with the dialog confirmed, favourite and archive, albums on keys 1-9, side-by-side comparison of similar photos, saved counts and photos left.
 // @match        https://photos.google.com/*
 // @run-at       document-start
@@ -108,6 +108,9 @@ SOFTWARE.
     closeDialog: /^(annulla|cancel|chiudi|close)$/i,
     clearSelection: /^(clear selection|deseleziona|annulla selezione|cancella selezione)/i,
     selectedCount: /^(\d[\d.,]*)\s+(selected|selezionat[aeio])$/i,
+    // The + at the top of the grid with photos selected, and the item of its menu.
+    albumBtn: /^(create or add to album|crea o aggiungi.*album|aggiungi.*album)$/i,
+    albumMenuItem: /^\s*album\s*$/i,
   };
 
   const log = (...a) => DEBUG && console.log('%c[GPQK]', 'color:#1a73e8;font-weight:bold', ...a);
@@ -479,25 +482,54 @@ SOFTWARE.
       if (b) realClick(b); else pressEscape();
     }
 
+    // In the viewer: More options → Add to album. In the grid, with photos
+    // selected: Create or add to album → Album. Both open the same picker.
     async function addToAlbum(digit) {
       const name = albums()[digit];
       if (!name) return toast(`No album on key ${digit}: press Shift+${digit} to assign one`, true);
 
-      const more = find(RX.moreBtn, { by: 'aria' });
-      if (!more) {
-        if (DEBUG) dump();
-        return toast('No "More options" button', true);
+      const grid = !inViewer();
+      let ids = [], n = 1;
+      if (grid) {
+        trackSelection();
+        if (!selectionActive()) {
+          return toast('Select the photos first: in the grid the number keys work on a selection', true);
+        }
+        ids = [...sel.last];
+        n = selectionSize();
       }
+
       const dialogsBefore = new Set(visibleDialogs());
-      realClick(more);
-      const item = await waitFor(() => findMenuItem(RX.addToAlbumItem), 1500)
-        || findMenuItem(RX.anyAlbumItem);
-      if (!item) {
-        logMenuItems();
-        pressEscape();
-        return toast('No "Add to album" item in the menu (see console)', true);
+      if (grid) {
+        const btn = find(RX.albumBtn, { by: 'aria' });
+        if (!btn) {
+          if (DEBUG) dump();
+          return toast('No "Create or add to album" button', true);
+        }
+        realClick(btn);
+        const item = await waitFor(() => findMenuItem(RX.albumMenuItem), 1500);
+        if (!item) {
+          logMenuItems();
+          pressEscape();
+          return toast('No "Album" item in the menu (see console)', true);
+        }
+        realClick(item);
+      } else {
+        const more = find(RX.moreBtn, { by: 'aria' });
+        if (!more) {
+          if (DEBUG) dump();
+          return toast('No "More options" button', true);
+        }
+        realClick(more);
+        const item = await waitFor(() => findMenuItem(RX.addToAlbumItem), 1500)
+          || findMenuItem(RX.anyAlbumItem);
+        if (!item) {
+          logMenuItems();
+          pressEscape();
+          return toast('No "Add to album" item in the menu (see console)', true);
+        }
+        realClick(item);
       }
-      realClick(item);
 
       // The picker is the new dialog, usually the one with "New album".
       const picker = await waitFor(() => {
@@ -524,21 +556,47 @@ SOFTWARE.
       entry.scrollIntoView({ block: 'center' });
       realClick(entry);
       await waitFor(() => !isVisible(picker), 3000);
-      count('albums');
-      toast(`Added to "${name}"`);
+      count('albums', n);
+      toast(n > 1 ? `${n} photos added to "${name}"` : `Added to "${name}"`);
 
-      if (!inViewer() || ALBUM_THEN === 'stay') return;
+      if (ALBUM_THEN === 'stay') return;
+      if (grid) return ALBUM_THEN === 'archive' ? archiveAgain(ids) : undefined;
       await sleep(300);
       return ALBUM_THEN === 'archive' ? archive() : next();
     }
 
+    // After the album, Google Photos clears the selection: tick the same photos
+    // again and archive them. If some are not found, nothing is archived.
+    async function archiveAgain(ids) {
+      const cleared = await waitFor(() => !selectionActive(), 3000);
+      if (cleared) {
+        await sleep(300);
+        const found = await tickPhotos(ids);
+        if (found < ids.length) {
+          return toast(`Only ${found} of ${ids.length} photos found again, nothing archived: press R, then A`, true);
+        }
+        await sleep(500);
+      }
+      return archive();
+    }
+
     // --- Selecting the same photos again in the grid --------------------------
     // Google Photos clears the selection after an action such as adding to an
-    // album. The script keeps the IDs of the photos that were selected, and R
-    // ticks their boxes again.
-    // current: the photos ticked now. last: the last selection that was not
-    // empty. partial: R found only some of the photos, so last is kept whole.
-    const sel = { current: new Set(), last: [], partial: false };
+    // album. The script keeps the IDs of the photos that were selected, and
+    // where each one is in the grid, and R ticks their boxes again.
+    // current: the photos ticked now. unticked: photo ID → when its box was
+    // seen unticked, kept for UNTICK_GRACE ms. last: the last selection that was
+    // not empty. pos: photo ID → its height in the scrolling grid. partial: R
+    // found only some of the photos, so last is kept whole. ticking: the script
+    // is ticking boxes, and the check every 400 ms waits.
+    const sel = {
+      current: new Set(), unticked: new Map(), last: [], pos: new Map(),
+      partial: false, ticking: false, idle: 0, scroller: null,
+    };
+    // When Google Photos clears a selection, it unticks the boxes on screen a
+    // moment before the selection ends. A photo unticked while the selection
+    // goes on for this long was unticked by hand, and leaves last.
+    const UNTICK_GRACE = 1500;
 
     // The box of a photo sits next to the link to the photo, which holds its ID.
     // The box of a whole day has no link that close.
@@ -553,29 +611,59 @@ SOFTWARE.
     const photoBoxes = () => [...document.querySelectorAll('[role="checkbox"]')]
       .map((box) => ({ box, id: photoIdOf(box) })).filter((b) => b.id);
 
+    // The element that scrolls the grid: the first parent of a photo box that
+    // can scroll.
+    function gridScroller() {
+      if (sel.scroller && sel.scroller.isConnected) return sel.scroller;
+      const first = photoBoxes()[0];
+      for (let n = first && first.box.parentElement; n; n = n.parentElement) {
+        if (n.scrollHeight > n.clientHeight + 20 && /(auto|scroll)/.test(getComputedStyle(n).overflowY)) {
+          return (sel.scroller = n);
+        }
+      }
+      return document.scrollingElement;
+    }
+
+    function offsetIn(sc, el) {
+      const top = el.getBoundingClientRect().top + sc.scrollTop;
+      return sc === document.scrollingElement ? top : top - sc.getBoundingClientRect().top;
+    }
+
     // With the selected photos scrolled away, no box on the page is ticked, but
     // the "Clear selection" button is still at the top.
     const clearSelectionShown = () => [...document.querySelectorAll('button[aria-label], [role="button"][aria-label]')]
       .some((b) => RX.clearSelection.test(ariaOf(b)) && isVisible(b));
+    const selectionActive = () =>
+      !!document.querySelector('[role="checkbox"][aria-checked="true"]') || clearSelectionShown();
 
     // Runs every 400 ms. The grid only keeps the photos near the screen in the
     // page, so a photo scrolled out of view stays in the set until its box is
-    // seen unticked. When the selection is cleared, the boxes are unticked
-    // before the bar at the top goes: last is only replaced by a selection
-    // that is not empty, so it survives that.
+    // seen unticked. The selection counts as ended after 2 checks in a row
+    // find none, since the page can show no selection for a moment.
     function trackSelection() {
-      if (inViewer()) return;
-      const active = document.querySelector('[role="checkbox"][aria-checked="true"]') || clearSelectionShown();
-      if (!active) {
+      if (inViewer() || sel.ticking) return;
+      if (!selectionActive()) {
+        if (++sel.idle < 2) return;
         sel.current = new Set();
+        sel.unticked = new Map();
         sel.partial = false;
         return;
       }
+      sel.idle = 0;
+      if (!sel.current.size && !sel.unticked.size && !sel.partial) sel.pos = new Map();   // a new selection
+      const sc = gridScroller();
+      const now = Date.now();
       for (const { box, id } of photoBoxes()) {
-        if (box.getAttribute('aria-checked') === 'true') sel.current.add(id);
-        else sel.current.delete(id);
+        if (box.getAttribute('aria-checked') === 'true') {
+          sel.current.add(id);
+          sel.unticked.delete(id);
+          sel.pos.set(id, offsetIn(sc, box));
+        } else if (sel.current.delete(id)) {
+          sel.unticked.set(id, now);
+        }
       }
-      if (sel.current.size && !sel.partial) sel.last = [...sel.current];
+      for (const [id, t] of sel.unticked) if (now - t > UNTICK_GRACE) sel.unticked.delete(id);
+      if (!sel.partial && (sel.current.size || sel.unticked.size)) sel.last = [...sel.current, ...sel.unticked.keys()];
     }
 
     // The number in "12 selected" at the top, or else the boxes seen ticked.
@@ -591,28 +679,87 @@ SOFTWARE.
       return sel.current.size || 1;
     }
 
+    // Scrolls the grid to y and waits for test() to be true. The grid can take
+    // a moment to draw the photos: if they are not there after 3 s, it nudges
+    // the scroll by 1 px, then looks up to 2 screens above and below.
+    async function scrollUntil(sc, y, test) {
+      sc.scrollTop = y;
+      if (await waitFor(test, 3000)) return true;
+      sc.scrollTop = y + 1;
+      await sleep(100);
+      sc.scrollTop = y;
+      if (await waitFor(test, 2000)) return true;
+      for (const k of [-1, 1, -2, 2]) {
+        sc.scrollTop = Math.max(0, y + k * sc.clientHeight * 0.8);
+        if (await waitFor(test, 1500)) return true;
+      }
+      return false;
+    }
+
+    // Ticks the photos with these IDs. The ones not on the page are found by
+    // scrolling to where they were seen. Then the grid goes back to where it
+    // was. Returns how many were found.
+    //
+    // Google Photos shows a tick a moment after the click. Until then the
+    // selection looks empty, so the check every 400 ms waits until the ticks
+    // or the "Clear selection" button are there, for up to 2 s.
+    async function tickPhotos(ids) {
+      sel.ticking = true;
+      try {
+        const found = await tickAll(ids);
+        await waitFor(selectionActive, 2000);
+        sel.current = found;
+        sel.unticked = new Map();
+        sel.partial = found.size > 0 && found.size < ids.length;
+        return found.size;
+      } finally {
+        sel.ticking = false;
+      }
+    }
+
+    async function tickAll(ids) {
+      const want = new Set(ids);
+      const found = new Set(), tried = new Set();
+      const tickShown = async () => {
+        for (const { box, id } of photoBoxes()) {
+          if (!want.has(id) || found.has(id)) continue;
+          found.add(id);
+          if (box.getAttribute('aria-checked') !== 'true') {
+            realClick(box);
+            await sleep(80);
+          }
+        }
+      };
+      await tickShown();
+      const sc = gridScroller();
+      const start = sc.scrollTop;
+      for (;;) {
+        const id = ids.filter((x) => !found.has(x) && !tried.has(x) && sel.pos.has(x))
+          .sort((a, b) => sel.pos.get(a) - sel.pos.get(b))[0];
+        if (!id) break;
+        tried.add(id);
+        toast(`Selecting the photos again: ${found.size} of ${ids.length}`);
+        await scrollUntil(sc, Math.max(0, sel.pos.get(id) - sc.clientHeight / 3),
+          () => photoBoxes().some((b) => b.id === id));
+        await tickShown();
+      }
+      if (sc.scrollTop !== start) {
+        sc.scrollTop = start;
+        await sleep(300);
+      }
+      return found;
+    }
+
     async function reselect() {
       if (inViewer()) return toast('R works in the grid: close the photo first', true);
       trackSelection();
       const ids = sel.last;
       // After an R that found only some of the photos, those stay ticked and R
       // goes on with the rest. Otherwise ticked photos are a selection in use.
-      if (sel.current.size && !sel.partial) return toast('Photos are already selected', true);
+      if (selectionActive() && !sel.partial) return toast('Photos are already selected', true);
       if (!ids.length) return toast('No earlier selection', true);
-      const boxes = new Map(photoBoxes().map((b) => [b.id, b.box]));
-      let found = 0;
-      sel.partial = true;               // the ticks below must not shrink last
-      for (const id of ids) {
-        const box = boxes.get(id);
-        if (!box) continue;
-        found++;
-        if (box.getAttribute('aria-checked') !== 'true') {
-          realClick(box);
-          await sleep(80);
-        }
-      }
-      sel.partial = found > 0 && found < ids.length;
-      if (!found) return toast('The photos are not on the page: scroll to them and press R again', true);
+      const found = await tickPhotos(ids);
+      if (!found) return toast('The photos were not found: scroll to them and press R again', true);
       if (sel.partial) return toast(`${found} of ${ids.length} photos selected again: scroll to the others and press R again`, true);
       toast(`${found} photos selected again`);
     }

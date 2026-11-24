@@ -47,6 +47,7 @@ total, and how many photos are left.
 - [Deleting](#deleting)
 - [Favourites](#favourites)
 - [Albums on the number keys](#albums-on-the-number-keys)
+  - [Albums in the grid](#albums-in-the-grid)
 - [Selecting the same photos again](#selecting-the-same-photos-again)
 - [Comparing similar photos](#comparing-similar-photos)
 - [The panel and the statistics](#the-panel-and-the-statistics)
@@ -85,7 +86,7 @@ this repository.
 | `F` | Add to favourites and archive the photo. On a favourite, remove it from the favourites. |
 | `Space` | Keep the photo and go to the next one |
 | `Z` or `U` | Press **Undo** on the notification at the bottom of the page |
-| `1` to `9` | Add the photo to the album assigned to that key and archive it |
+| `1` to `9` | Add the photo, or the selected photos in the grid, to the album assigned to that key and archive them |
 | `Shift`+`1` to `9` | Assign an album to that key |
 | `R` | In the grid: select the photos that were selected last |
 | `C` | Turn the comparison mode on or off |
@@ -94,7 +95,8 @@ this repository.
 | `Alt`+`K` | Turn all the keys on or off (`Option`+`K` on a Mac) |
 
 The keys work in the photo viewer, with one photo open. After archiving or deleting, Google
-Photos opens the next photo by itself. In the grid, `R` and `A` work on a selection: see
+Photos opens the next photo by itself. In the grid, `1` to `9`, `R` and `A` work on a
+selection: see [Albums in the grid](#albums-in-the-grid) and
 [Selecting the same photos again](#selecting-the-same-photos-again).
 
 The script ignores a key:
@@ -183,22 +185,35 @@ photo. `ALBUM_THEN` at the top of the script sets what happens instead:
 Albums can also be set in the `ALBUMS` object at the top of the script. An album assigned
 with `Shift` and a number replaces the one set in the script for the same key.
 
+### Albums in the grid
+
+1. In the grid, select the photos. You can scroll while you select.
+2. Press the number of the album.
+
+The script presses **Create or add to album**, chooses **Album** and picks the album in
+the same list as in the viewer. Google Photos then clears the selection. With
+`ALBUM_THEN = 'archive'`, the script waits up to 3 seconds for the selection to clear,
+ticks the same photos again as `R` does, and archives them. If it does not find all of
+them, it archives none and a red message says how many it found.
+
+With no photos selected, a number key in the grid only shows a red message.
+
 ## Selecting the same photos again
 
-In the grid, Google Photos clears the selection after you add the selected photos to an
-album. To archive the same photos:
+`R` ticks again the photos that were selected last, for example after you added them to an
+album with **Create or add to album**. Then `A` archives them.
 
-1. Select the photos and add them to the album with **Create or add to album**.
-2. Press `R`. The script ticks the same photos again.
-3. Press `A`. The script opens **More options** and chooses **Archive**.
+The script checks the boxes in the grid every 400 ms. It keeps the ID of each selected photo
+and how far down the grid it is. It keeps them until you select other photos, and it
+forgets them when the page is reloaded. A photo you untick stays in the list for 1.5
+seconds, since Google Photos unticks the boxes on screen a moment before it clears a
+selection.
 
-The script checks the boxes in the grid every 400 ms and keeps the IDs of the last photos
-that were selected. It keeps them until you select other photos, and it forgets them when
-the page is reloaded.
-
-Google Photos keeps only the photos near the screen in the page. If some of the photos are
-too far up or down, `R` ticks the ones it finds and a red message says how many are
-missing. Scroll to the others and press `R` again.
+Google Photos keeps only the photos near the screen in the page. For the photos that are
+not there, `R` scrolls the grid to where each one was seen, ticks it, and then scrolls back.
+It waits up to 3 seconds for each photo to appear, then looks up to 2 screens above and
+below. If a photo is still not found, a red message says how many are missing. Scroll to
+them and press `R` again.
 
 While photos are selected, and in the photo viewer, `R` only shows a red message. The
 exception is a selection left by an `R` that found only some of the photos.
@@ -346,10 +361,12 @@ the script need the new text. Open an issue with the `gpqkDump()` output.
 
 - The buttons are recognised in Italian and English Google Photos only. With Google
   Photos in another language, the keys find no buttons.
-- Written and tried in the photo viewer. In the grid, `R` has been tried, and **Archive** is
-  in the **More options** menu of a selection, but archiving a selection with `A` has not
-  been tried. The number keys do not work in the grid: there, **Add to album** is not in
-  **More options**.
+- Written and tried in the photo viewer. In the grid, `R` has been tried with photos 3,700
+  pixels apart, and a number key has been tried as far as the album list. Adding a
+  selection to an album and archiving it have not been tried on real photos.
+- `R` finds a photo by where it was in the grid. If the grid above it changes, for example
+  after photos above it were archived, the photo may be more than 2 screens away and `R`
+  misses it.
 - **`Z` presses the Undo button that is on screen.** Google Photos shows its notifications
   one after the other, a few seconds each. If you sort quickly, the notification on screen
   can belong to an action a few photos back, and `Z` undoes that one. Press `Z` straight
