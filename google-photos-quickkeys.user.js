@@ -6,7 +6,7 @@
 // @downloadURL  https://raw.githubusercontent.com/gmadevs/GPTools/main/google-photos-quickkeys.user.js
 // @updateURL    https://raw.githubusercontent.com/gmadevs/GPTools/main/google-photos-quickkeys.user.js
 // @license      MIT
-// @version      0.14.0
+// @version      0.15.0
 // @description  Single keys for sorting photos on Google Photos: archive, delete with the dialog confirmed, favourite and archive, albums on keys 1-9, side-by-side comparison of similar photos, saved counts and photos left.
 // @match        https://photos.google.com/*
 // @run-at       document-start
@@ -65,6 +65,7 @@ SOFTWARE.
     dupMode: ['c'],       // comparison mode for similar photos
     setLeft: ['t'],       // set how many photos are left to sort
     reselect: ['r'],      // in the grid: select the last selected photos again
+    select: ['s'],        // in the viewer, during a selection: tick or untick the open photo
   };
   // Turns all the keys on and off. Read from event.code, so it works with any
   // layout; on a Mac, Alt is the Option key.
@@ -113,6 +114,8 @@ SOFTWARE.
     // The + at the top of the grid with photos selected, and the item of its menu.
     albumBtn: /^(create or add to album|crea o aggiungi.*album|aggiungi.*album)$/i,
     albumMenuItem: /^\s*album\s*$/i,
+    // The box at the top right of the viewer while photos are selected.
+    selectBox: /^(select|seleziona)/i,
   };
 
   const log = (...a) => DEBUG && console.log('%c[GPQK]', 'color:#1a73e8;font-weight:bold', ...a);
@@ -451,6 +454,26 @@ SOFTWARE.
       if (r !== 'already' || !inViewer()) return r;
       await sleep(300);
       return openNext();
+    }
+
+    // --- Selecting in the viewer ------------------------------------------------
+    // With photos selected in the grid, the viewer shows a "Select" box at the
+    // top right in place of the usual buttons. S ticks or unticks it for the
+    // open photo; the arrows still move between photos.
+    async function selectOpen() {
+      if (!inViewer()) return toast('S works with a photo open', true);
+      const boxes = [...document.querySelectorAll('[role="checkbox"]')].filter(isVisible).reverse();
+      const box = boxes.find((b) => RX.selectBox.test(ariaOf(b))) || (boxes.length === 1 ? boxes[0] : null);
+      if (!box) {
+        if (DEBUG) dump();
+        return toast('No "Select" box: tick a photo in the grid first, then open one', true);
+      }
+      const was = box.getAttribute('aria-checked') === 'true';
+      realClick(box);
+      const changed = await waitFor(() => (box.getAttribute('aria-checked') === 'true') !== was, 1500);
+      if (!changed) return toast('The "Select" box did not change', true);
+      const n = googleCount(true);
+      toast(`${was ? 'Unselected' : 'Selected'}${n ? ` (${n} selected)` : ''}`);
     }
 
     // --- Albums on the number keys --------------------------------------------
@@ -1294,6 +1317,7 @@ SOFTWARE.
       helpRow('dupMode', 'compare similar photos'),
       helpRow('setLeft', 'set photos left'),
       helpRow('reselect', 'grid: select the last photos again'),
+      helpRow('select', 'viewer: select the open photo'),
       helpRow('toggleHud', 'panel: full, counts only, hidden'),
       el('div', {}, [el('kbd', { textContent: toggleLabel }), ' all keys on/off']),
       el('div', {}, [el('kbd', { textContent: '1–9' }), ' album  ', el('kbd', { textContent: 'Shift+1–9' }), ' assign']),
@@ -1403,7 +1427,7 @@ SOFTWARE.
     // ---------------------------------------------------------------------------
     // Keyboard
     // ---------------------------------------------------------------------------
-    const ACTIONS = { archive, trash, favorite, undo, next, toggleHud, dupMode: toggleDup, setLeft, reselect };
+    const ACTIONS = { archive, trash, favorite, undo, next, toggleHud, dupMode: toggleDup, setLeft, reselect, select: selectOpen };
     setInterval(trackSelection, 400);
     const keyMap = new Map();
     for (const [action, keys] of Object.entries(KEYS)) {

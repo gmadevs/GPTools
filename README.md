@@ -28,6 +28,7 @@ F           favourite, then archive
 Space       keep, go to the next photo
 Z           undo
 1 … 9       add to an album you chose for that key
+S           select the open photo, during a selection
 C           compare two similar photos side by side and keep one
 T           set how many photos are left to sort
 Alt+K       turn all the keys on or off (Option+K on a Mac)
@@ -48,6 +49,7 @@ total, and how many photos are left.
 - [Favourites](#favourites)
 - [Albums on the number keys](#albums-on-the-number-keys)
   - [Albums in the grid](#albums-in-the-grid)
+- [Selecting photos in the viewer](#selecting-photos-in-the-viewer)
 - [Selecting the same photos again](#selecting-the-same-photos-again)
   - [Shift+click and the box of a day](#shiftclick-and-the-box-of-a-day)
 - [Comparing similar photos](#comparing-similar-photos)
@@ -90,6 +92,7 @@ this repository.
 | `1` to `9` | Add the photo, or the selected photos in the grid, to the album assigned to that key and archive them |
 | `Shift`+`1` to `9` | Assign an album to that key |
 | `R` | In the grid: select the photos that were selected last |
+| `S` | In the viewer, during a selection: tick or untick the open photo |
 | `C` | Turn the comparison mode on or off |
 | `T` | Set the number of photos left to sort |
 | `H` | Change the panel: counts and keys, counts only, hidden |
@@ -213,6 +216,20 @@ nothing, and a red message gives the numbers, in two cases:
 - after ticking, Google Photos counts fewer photos than before.
 
 With no photos selected, a number key in the grid only shows a red message.
+
+## Selecting photos in the viewer
+
+1. In the grid, tick one photo.
+2. Open a photo with the magnifier at its bottom right. The viewer shows "1 selected" at
+   the top left and a **Select** box at the top right.
+3. Move between the photos with the arrow keys and press `S` on each photo you want.
+
+`S` presses the **Select** box. On a photo that is already selected it unticks it. A
+message shows "Selected" or "Unselected" and the number of selected photos that Google
+Photos shows at the top. When you go back to the grid, the photos stay selected, and `A`
+or a number key works on all of them.
+
+Without a selection, the viewer has no **Select** box, and `S` shows a red message.
 
 ## Selecting the same photos again
 
