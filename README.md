@@ -150,6 +150,12 @@ If the photo is already a favourite, `F` removes it from the favourites and does
 else. The script tells a favourite from the button: its label contains "remove",
 "unfavorite", "rimuovi" or "togli", or the button is in the pressed state.
 
+If the photo is already archived, for example in an album of photos you sorted before, the
+menu has **Unarchive** (**Annulla archiviazione** in Italian) in place of **Archive**. `F`
+then closes the menu, shows "Already archived" and opens the next photo. The photo stays
+archived. The same happens after a number key, and `A` on an archived photo only shows the
+message.
+
 `FAVORITE_THEN` at the top of the script sets what happens after a favourite is added:
 
 | Value | After the favourite |

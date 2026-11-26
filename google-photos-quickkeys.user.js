@@ -6,7 +6,7 @@
 // @downloadURL  https://raw.githubusercontent.com/gmadevs/GPTools/main/google-photos-quickkeys.user.js
 // @updateURL    https://raw.githubusercontent.com/gmadevs/GPTools/main/google-photos-quickkeys.user.js
 // @license      MIT
-// @version      0.13.1
+// @version      0.14.0
 // @description  Single keys for sorting photos on Google Photos: archive, delete with the dialog confirmed, favourite and archive, albums on keys 1-9, side-by-side comparison of similar photos, saved counts and photos left.
 // @match        https://photos.google.com/*
 // @run-at       document-start
@@ -94,6 +94,8 @@ SOFTWARE.
     moreBtn: /^(altre opzioni|more options|altro|more)$/i,
     // No \b: the item text runs into the shortcut shown beside it ("ArchiveShift+A").
     archiveItem: /^\s*(archivia|archive)(?!zion|d)/i,
+    // The same menu on a photo that is already archived.
+    unarchiveItem: /(unarchive|annulla archiviazione|(rimuovi|togli) dall['’]?\s*archivio)/i,
     confirmTrash: /(sposta nel cestino|nel cestino|move to (trash|bin)|^elimina|^delete|rimuovi|remove)/i,
     cancel: /^(annulla|cancel)$/i,
     undo: /^(annulla|undo)$/i,
@@ -359,14 +361,21 @@ SOFTWARE.
       );
     }
 
+    // Returns true when the photo is archived, 'already' when the menu offers
+    // Unarchive. Shift+A is not sent then: on an archived photo it unarchives it.
     async function archive() {
       // In the grid, A archives the selected photos: count all of them.
       const n = inViewer() ? 1 : selectionSize();
       const more = find(RX.moreBtn, { by: 'aria' });
       if (more) {
         realClick(more);
-        const item = await waitFor(() => findMenuItem(RX.archiveItem), 1500);
+        const item = await waitFor(() => findMenuItem(RX.archiveItem) || findMenuItem(RX.unarchiveItem), 1500);
         if (!item) logMenuItems();
+        if (item && !RX.archiveItem.test(textOf(item)) && !RX.archiveItem.test(ariaOf(item))) {
+          pressEscape();
+          toast(n > 1 ? 'The photos are already archived' : 'Already archived');
+          return 'already';
+        }
         if (item) {
           realClick(item);
           count('archived', n);
@@ -432,7 +441,16 @@ SOFTWARE.
       toast('Favourite ★');
       if (FAVORITE_THEN === 'stay') return;
       await sleep(300);
-      return FAVORITE_THEN === 'archive' ? archive() : next();
+      return FAVORITE_THEN === 'archive' ? archiveOrSkip() : next();
+    }
+
+    // After F or a number key: archive the photo. If it is already archived
+    // (an album of archived photos), open the next photo, without counting it as kept.
+    async function archiveOrSkip() {
+      const r = await archive();
+      if (r !== 'already' || !inViewer()) return r;
+      await sleep(300);
+      return openNext();
     }
 
     // --- Albums on the number keys --------------------------------------------
@@ -563,7 +581,7 @@ SOFTWARE.
       if (ALBUM_THEN === 'stay') return;
       if (grid) return ALBUM_THEN === 'archive' ? archiveAgain(ids, n) : undefined;
       await sleep(300);
-      return ALBUM_THEN === 'archive' ? archive() : next();
+      return ALBUM_THEN === 'archive' ? archiveOrSkip() : next();
     }
 
     // After the album, Google Photos clears the selection: tick the same photos
@@ -994,10 +1012,15 @@ SOFTWARE.
       toast('Undone ↶');
     }
 
-    function next() {
+    function openNext() {
       const btn = find(RX.nextBtn, { by: 'aria' });
       if (btn) realClick(btn);
       else sendKey({ key: 'ArrowRight', code: 'ArrowRight', keyCode: 39 });
+      return true;
+    }
+
+    function next() {
+      openNext();
       count('kept');
       renderHud();
       return true;
